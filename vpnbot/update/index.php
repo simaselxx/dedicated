@@ -499,16 +499,44 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
     if ($marzban_list_get['type'] == "ibsng") {
         $datatextbot['textafterpay'] = $datatextbot['textafterpayibsng'];
     }
+    // SSH panels: hardcoded template for test account
+    if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_ports = parse_ssh_ports($marzban_list_get);
+        $ssh_host = get_ssh_display_host($marzban_list_get);
+        $ssh_volume = (intval($marzban_list_get['val_usertest']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $marzban_list_get['val_usertest'] . ' GB';
+        $ssh_expire_date = date('Y/m/d', time() + (intval($marzban_list_get['time_usertest']) * 3600));
+        $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+        $textcreatuser = "✅ سرویس تست با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+📶 Connection Limit : 1
+⏳ Days : {$marzban_list_get['time_usertest']}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : تست
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    } else {
     $textcreatuser = str_replace('{username}', $dataoutput['username'], $datatextbot['textaftertext']);
     $textcreatuser = str_replace('{name_service}', "تست", $textcreatuser);
     $textcreatuser = str_replace('{location}', $marzban_list_get['name_panel'], $textcreatuser);
     $textcreatuser = str_replace('{day}', $marzban_list_get['time_usertest'], $textcreatuser);
     $textcreatuser = str_replace('{volume}', $marzban_list_get['val_usertest'], $textcreatuser);
     $textcreatuser = str_replace('{config}', "<code>{$config}{$output_config_link}</code>", $textcreatuser);
-    if ($marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "ibsng") {
+    if ($marzban_list_get['type'] == "ibsng") {
         $textcreatuser = str_replace('{password}', $dataoutput['subscription_url'], $textcreatuser);
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
     }
+    } // end else (non-SSH test)
 if ($marzban_list_get['sublink'] == "onsublink") {
     if ($marzban_list_get['type'] == "WGDashboard") {
         $urlimage = "{$marzban_list_get['inboundid']}_{$dataoutput['username']}.conf";
@@ -589,109 +617,32 @@ if ($text == $text_bot_var['btn_keyboard']['buy'] && $setting['active_step_note'
     step("statusnamecustom", $from_id);
     return;
 } elseif ($text == $text_bot_var['btn_keyboard']['buy'] || $user['step'] == "statusnamecustom") {
-    $locationproduct = mysqli_query($connect, "SELECT * FROM marzban_panel  WHERE status = 'active' AND (agent = '{$userbot['agent']}' OR agent = 'all')");
-    if (mysqli_num_rows($locationproduct) == 0) {
-        sendmessage($from_id, $textbotlang['Admin']['managepanel']['nullpanel'], null, 'HTML');
+    // New flow: Category first, then Server, then Product
+    $nullproduct = select("product", "*", "agent", $userbot['agent'], "count");
+    if ($nullproduct == 0) {
+        sendmessage($from_id, $textbotlang['Admin']['Product']['nullpProduct'], null, 'HTML');
         return;
-    }
-    if (mysqli_num_rows($locationproduct) == 1) {
-        $location = mysqli_fetch_assoc($locationproduct)['name_panel'];
-        $locationproduct = select("marzban_panel", "*", "name_panel", $location, "select");
-        $query = "SELECT * FROM product WHERE (Location = '{$locationproduct['name_panel']}' OR Location = '/all')AND agent= '{$userbot['agent']}'";
-        $stmt = $pdo->prepare($query);
-        $stmt->execute();
-        $productnotexits = $stmt->rowCount();
-        if ($locationproduct['hide_user'] != null) {
-            $list_user = json_decode($locationproduct['hide_user'], true);
-            if (in_array($from_id, $list_user)) {
-                sendmessage($from_id, $textbotlang['Admin']['managepanel']['nullpanel'], null, 'HTML');
-                return;
-            }
-        }
-        $stmt = $pdo->prepare("SELECT * FROM invoice WHERE status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold'");
-        $stmt->execute();
-        $countinovoice = $stmt->rowCount();
-        if ($locationproduct['limit_panel'] != "unlimited") {
-            if ($countinovoice >= $locationproduct['limit_panel']) {
-                sendmessage($from_id, $textbotlang['Admin']['managepanel']['limitedpanelfirst'], null, 'HTML');
-                return;
-            }
-        }
-        if ($user['step'] == "statusnamecustom") {
-            savedata('clear', "note", $text);
-            savedata('save', "name_panel", $location);
-            step("home", $from_id);
-        } else {
-            savedata('clear', "name_panel", $location);
-        }
-        $marzban_list_get = $locationproduct;
-        if ($productnotexits != 0 and $setting['show_product'] == false) {
-            if ($settingmain['statuscategorygenral'] == "offcategorys") {
-                $statuscustomvolume = json_decode($locationproduct['customvolume'], true)[$userbot['agent']];
-                if ($statuscustomvolume == "1" && $locationproduct['type'] != "Manualsale") {
-                    $statuscustom = true;
-                } else {
-                    $statuscustom = false;
-                }
-                if ($marzban_list_get['MethodUsername'] == $textbotlang['users']['customusername'] || $marzban_list_get['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم") {
-                    $keyboarddata = "selectproductbuyy_";
-                } else {
-                    $keyboarddata = "selectproductbuy_";
-                }
-                $prodcut = KeyboardProduct($marzban_list_get['name_panel'], $query, 0, $keyboarddata, $statuscustom, "backuser", null, $customvolume = "customvolumebuy");
-                sendmessage($from_id, "🛍️ لطفاً سرویسی که می‌خواهید خریداری کنید را انتخاب کنید!", $prodcut, 'HTML');
-                return;
-            } else {
-                $nullproduct = select("product", "*", "agent", $userbot['agent'], "count");
-                if ($nullproduct == 0) {
-                    sendmessage($from_id, $textbotlang['Admin']['Product']['nullpProduct'], null, 'HTML');
-                    return;
-                }
-                sendmessage($from_id, "📌 دسته بندی خود را انتخاب نمایید!", KeyboardCategory($marzban_list_get['name_panel'], $userbot['agent'], "backuser"), 'HTML');
-                return;
-            }
-        } else {
-            $marzban_list_get = $locationproduct;
-            $eextraprice = $setting['pricevolume'];
-            $mainvolume = json_decode($marzban_list_get['mainvolume'], true);
-            $mainvolume = $mainvolume[$userbot['agent']];
-            $maxvolume = json_decode($marzban_list_get['maxvolume'], true);
-            $maxvolume = $maxvolume[$userbot['agent']];
-            $textcustom = "📌 حجم درخواستی خود را ارسال کنید.
-        🔔قیمت هر گیگ حجم $eextraprice تومان می باشد.
-        🔔 حداقل حجم $mainvolume گیگابایت و حداکثر $maxvolume گیگابایت می باشد.";
-            sendmessage($from_id, $textcustom, $backuser, 'html');
-            step('gettimecustomvol', $from_id);
-            return;
-        }
     }
     if ($user['step'] == "statusnamecustom") {
         savedata('clear', "note", $text);
         step("home", $from_id);
     }
-    sendmessage($from_id, "📌 موقعیت سرویس خود را انتخاب کنید", $list_marzban_panel_user, 'HTML');
-} elseif ($datain == "customvolumebuy") {
+    sendmessage($from_id, "📌 دسته بندی خود را انتخاب نمایید!", KeyboardCategoryAll($userbot['agent'], "backuser"), 'HTML');
+} elseif (preg_match('/^buycategory_(.*)/', $datain, $dataget)) {
+    // Step 2: Category selected, always show servers
+    $categoryid = $dataget[1];
+    $categoryname = select("category", "remark", "id", $categoryid, "select")['remark'];
+    savedata('clear', "buy_category", $categoryname);
+    $serversKeyboard = KeyboardServersForCategory($categoryname, $userbot['agent'], "backuser");
+    Editmessagetext($from_id, $message_id, "📌 سرور مورد نظر خود را انتخاب کنید!", $serversKeyboard, 'HTML');
+} elseif (preg_match('/^buyserver_(.*)/', $datain, $dataget)) {
+    // Step 3: Server selected, show products
     $userdate = json_decode($user['Processing_value'], true);
-    $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
-    $eextraprice = $setting['pricevolume'];
-    $mainvolume = json_decode($marzban_list_get['mainvolume'], true);
-    $mainvolume = $mainvolume[$userbot['agent']];
-    $maxvolume = json_decode($marzban_list_get['maxvolume'], true);
-    $maxvolume = $maxvolume[$userbot['agent']];
-    $textcustom = "📌 حجم درخواستی خود را ارسال کنید.
-🔔قیمت هر گیگ حجم $eextraprice تومان می باشد.
-🔔 حداقل حجم $mainvolume گیگابایت و حداکثر $maxvolume گیگابایت می باشد.";
-    sendmessage($from_id, $textcustom, $backuser, 'html');
-    step('gettimecustomvol', $from_id);
-} elseif (preg_match('/^location_(.*)/', $datain, $dataget)) {
-    $userdate = json_decode($user['Processing_value'], true);
+    $categoryname = $userdate['buy_category'];
     $locationproduct = select("marzban_panel", "*", "code_panel", $dataget[1], "select");
-    if (isset($userdate['note'])) {
-        savedata("save", "name_panel", $locationproduct['name_panel']);
-    } else {
-        savedata("clear", "name_panel", $locationproduct['name_panel']);
-    }
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND  Service_location = '{$locationproduct['name_panel']}'");
+    savedata("save", "name_panel", $locationproduct['name_panel']);
+
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = '{$locationproduct['name_panel']}'");
     $stmt->execute();
     $countinovoice = $stmt->rowCount();
     if ($locationproduct['limit_panel'] != "unlimited") {
@@ -700,98 +651,37 @@ if ($text == $text_bot_var['btn_keyboard']['buy'] && $setting['active_step_note'
             return;
         }
     }
-    $query = "SELECT * FROM product WHERE (Location = '{$locationproduct['name_panel']}' OR Location = '/all')AND agent= '{$userbot['agent']}'";
-    $stmt = $pdo->prepare($query);
-    $stmt->execute();
-    $productnotexits = $stmt->rowCount();
-    if ($productnotexits != 0 and $setting['show_product'] == false) {
-        if ($settingmain['statuscategorygenral'] == "offcategorys") {
-            $statuscustomvolume = json_decode($locationproduct['customvolume'], true)[$userbot['agent']];
-            if ($statuscustomvolume == "1" && $locationproduct['type'] != "Manualsale") {
-                $statuscustom = true;
-            } else {
-                $statuscustom = false;
-            }
-            if ($locationproduct['MethodUsername'] == $textbotlang['users']['customusername'] || $locationproduct['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم") {
-                $keyboarddata = "selectproductbuyy_";
-            } else {
-                $keyboarddata = "selectproductbuy_";
-            }
-            $prodcut = KeyboardProduct($locationproduct['name_panel'], $query, 0, $keyboarddata, $statuscustom, "backuser", null, $customvolume = "customvolumebuy");
-            Editmessagetext($from_id, $message_id, "🛍️ لطفاً سرویسی که می‌خواهید خریداری کنید را انتخاب کنید!", $prodcut, 'HTML');
-        } else {
-            $nullproduct = select("product", "*", "agent", $userbot['agent'], "count");
-            if ($nullproduct == 0) {
-                sendmessage($from_id, $textbotlang['Admin']['Product']['nullpProduct'], null, 'HTML');
-                return;
-            }
-            Editmessagetext($from_id, $message_id, "📌 دسته بندی خود را انتخاب نمایید!", KeyboardCategory($locationproduct['name_panel'], $userbot['agent'], "backuser"));
-        }
-    } else {
-        deletemessage($from_id, $message_id);
-        $marzban_list_get = $locationproduct;
-        $eextraprice = $setting['pricevolume'];
-        $mainvolume = json_decode($marzban_list_get['mainvolume'], true);
-        $mainvolume = $mainvolume[$userbot['agent']];
-        $maxvolume = json_decode($marzban_list_get['maxvolume'], true);
-        $maxvolume = $maxvolume[$userbot['agent']];
-        $textcustom = "📌 حجم درخواستی خود را ارسال کنید.
-    🔔قیمت هر گیگ حجم $eextraprice تومان می باشد.
-    🔔 حداقل حجم $mainvolume گیگابایت و حداکثر $maxvolume گیگابایت می باشد.";
-        sendmessage($from_id, $textcustom, $backuser, 'html');
-        step('gettimecustomvol', $from_id);
-        return;
-    }
-} elseif (preg_match('/^categorynames_(.*)/', $datain, $dataget)) {
-    $categorynames = $dataget[1];
-    $categorynames = select("category", "remark", "id", $categorynames, "select")['remark'];
-    $userdate = json_decode($user['Processing_value'], true);
-    $locationproduct = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "seelct");
-    $query = "SELECT * FROM product WHERE (Location = '{$locationproduct['name_panel']}' OR Location = '/all') AND category = '$categorynames' AND agent= '{$userbot['agent']}' ";
-    $statuscustomvolume = json_decode($locationproduct['customvolume'], true)[$userbot['agent']];
-    if ($statuscustomvolume == "1" && $locationproduct['type'] != "Manualsale") {
-        $statuscustom = true;
-    } else {
-        $statuscustom = false;
-    }
+
+    $query = "SELECT * FROM product WHERE (Location = '{$locationproduct['name_panel']}' OR Location = '/all') AND category = '$categoryname' AND agent= '{$userbot['agent']}' ";
+    $statuscustom = false;
     if ($locationproduct['MethodUsername'] == $textbotlang['users']['customusername'] || $locationproduct['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم") {
         $keyboarddata = "selectproductbuyy_";
     } else {
         $keyboarddata = "selectproductbuy_";
     }
-    $prodcut = KeyboardProduct($locationproduct['name_panel'], $query, 0, $keyboarddata, $statuscustom, "backuser", null, $customvolume = "customvolumebuy");
+    $categoryid = select("category", "id", "remark", $categoryname, "select")['id'];
+    $prodcut = KeyboardProduct($locationproduct['name_panel'], $query, 0, $keyboarddata, $statuscustom, "buycategory_" . $categoryid, null, null);
     Editmessagetext($from_id, $message_id, "🛍️ لطفاً سرویسی که می‌خواهید خریداری کنید را انتخاب کنید!", $prodcut, 'HTML');
-} elseif ($user['step'] == "gettimecustomvol") {
-    $userdate = json_decode($user['Processing_value'], true);
-    $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
-    $mainvolume = json_decode($marzban_list_get['mainvolume'], true);
-    $mainvolume = $mainvolume[$userbot['agent']];
-    $maxvolume = json_decode($marzban_list_get['maxvolume'], true);
-    $maxvolume = $maxvolume[$userbot['agent']];
-    $maintime = json_decode($marzban_list_get['maintime'], true);
-    $maintime = $maintime[$userbot['agent']];
-    $maxtime = json_decode($marzban_list_get['maxtime'], true);
-    $maxtime = $maxtime[$userbot['agent']];
-    if ($text > intval($maxvolume) || $text < intval($mainvolume)) {
-        $texttime = "❌ حجم نامعتبر است.\n🔔 حداقل حجم $mainvolume گیگابایت و حداکثر $maxvolume گیگابایت می باشد";
-        sendmessage($from_id, $texttime, $backuser, 'HTML');
-        return;
-    }
-    if (!ctype_digit($text)) {
-        sendmessage($from_id, $textbotlang['Admin']['Product']['Invalidvolume'], $backuser, 'HTML');
-        return;
-    }
-    $customtimevalueprice = $setting['pricetime'];
-    savedata("save", "volume", $text);
-    $textcustom = "⌛️ زمان سرویس خود را انتخاب نمایید 
-📌 تعرفه هر روز  : $customtimevalueprice  تومان
-⚠️ حداقل زمان $maintime روز  و حداکثر $maxtime روز  می توانید تهیه کنید";
-    sendmessage($from_id, $textcustom, $backuser, 'html');
-    if ($marzban_list_get['MethodUsername'] == $textbotlang['users']['customusername'] || $marzban_list_get['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم") {
-        step('getvolumecustomusername', $from_id);
-    } else {
-        step('getvolumecustomuser', $from_id);
-    }
+} elseif ($datain == "customvolumebuy") {
+    // Custom volume disabled for reseller bots
+    sendmessage($from_id, "❌ این قابلیت غیرفعال است", null, 'HTML');
+    return;
+} elseif (preg_match('/^location_(.*)/', $datain, $dataget)) {
+    // Old flow - redirect to new flow
+    deletemessage($from_id, $message_id);
+    sendmessage($from_id, "📌 دسته بندی خود را انتخاب نمایید!", KeyboardCategoryAll($userbot['agent'], "backuser"), 'HTML');
+} elseif (preg_match('/^categorynames_(.*)/', $datain, $dataget)) {
+    // Old flow - redirect to new flow
+    $categoryid = $dataget[1];
+    $categoryname = select("category", "remark", "id", $categoryid, "select")['remark'];
+    savedata('clear', "buy_category", $categoryname);
+    $serversKeyboard = KeyboardServersForCategory($categoryname, $userbot['agent'], "backuser");
+    Editmessagetext($from_id, $message_id, "📌 سرور مورد نظر خود را انتخاب کنید!", $serversKeyboard, 'HTML');
+} elseif ($user['step'] == "gettimecustomvol" || $user['step'] == "getvolumecustomuser") {
+    // Custom volume disabled for reseller bots - reset step and show error
+    step('home', $from_id);
+    sendmessage($from_id, "❌ این قابلیت غیرفعال است. لطفا از منوی خرید اقدام کنید.", $keyboard, 'HTML');
+    return;
 } elseif ($user['step'] == "getvolumecustomusername" || preg_match('/selectproductbuyy_(.*)/', $datain, $dataget)) {
     $userdate = json_decode($user['Processing_value'], true);
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $userdate['name_panel'], "select");
@@ -1130,6 +1020,38 @@ if ($text == $text_bot_var['btn_keyboard']['buy'] && $setting['active_step_note'
 
 🧑‍🦯 شما میتوانید شیوه اتصال را  با فشردن دکمه زیر و انتخاب سیستم عامل خود را دریافت کنید";
     }
+    // SSH panels: hardcoded template (purchase)
+    if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_ports = parse_ssh_ports($marzban_list_get);
+        $ssh_host = get_ssh_display_host($marzban_list_get);
+        $ssh_days_display = (intval($datafactor['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $datafactor['Service_time'];
+        $ssh_volume = (intval($datafactor['Volume_constraint']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $datafactor['Volume_constraint'] . ' GB';
+        $ssh_expire_date = (intval($datafactor['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : date('Y/m/d', time() + (intval($datafactor['Service_time']) * 86400));
+        $ssh_connection_limit = 1;
+        if (isset($datafactor['inbounds']) && is_numeric($datafactor['inbounds'])) {
+            $ssh_connection_limit = intval($datafactor['inbounds']);
+        }
+        $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+        $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+📶 Connection Limit : {$ssh_connection_limit}
+⏳ Days : {$ssh_days_display}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : {$datafactor['name_product']}
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    } else {
     if (intval($datafactor['Service_time']) == 0)
         $datafactor['Service_time'] = $textbotlang['users']['stateus']['Unlimited'];
     if (intval($datafactor['Volume_constraint']) == 0)
@@ -1148,7 +1070,8 @@ if ($text == $text_bot_var['btn_keyboard']['buy'] && $setting['active_step_note'
         $textcreatuser = str_replace('{password}', $dataoutput['subscription_url'], $textcreatuser);
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
     }
-    if ($marzban_list_get['type'] == "Manualsale" | $marzban_list_get['type'] == "ibsng") {
+    } // end else (non-SSH purchase)
+    if ($marzban_list_get['type'] == "Manualsale" || $marzban_list_get['type'] == "ibsng" || in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
         sendmessage($from_id, $textcreatuser, null, 'HTML');
     } else {
     if (count($dataoutput['configs']) != 1 and $marzban_list_get['config'] == "onconfig") {
@@ -1308,6 +1231,29 @@ $textonebuy
     }
     step('home', $from_id);
     sendmessage($from_id, "💎 رسید شما ارسال و پس از بررسی حساب کاربری شما شارژ خواهد شد.", $keyboard, 'HTML');
+} elseif ($user['step'] == "sshchangepass") {
+    // تغییر رمز عبور SSH
+    $proc_val = $user['Processing_value_four'];
+    $id_invoice = str_replace('sshchangepass_', '', $proc_val);
+    $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    $newpass = trim($text);
+    if (strlen($newpass) < 4 || strlen($newpass) > 16) {
+        sendmessage($from_id, "❌ رمز عبور باید بین 4 تا 16 کاراکتر باشد.", $keyboard, 'html');
+        return;
+    }
+    if (!preg_match('/^[a-zA-Z0-9@#$%^&*!]+$/', $newpass)) {
+        sendmessage($from_id, "❌ رمز عبور فقط شامل حروف انگلیسی، اعداد و کاراکترهای خاص باشد.", $keyboard, 'html');
+        return;
+    }
+    $marzban = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
+    $config = array('password' => $newpass);
+    $result = $ManagePanel->Modifyuser($nameloc['username'], $nameloc['Service_location'], $config);
+    step('home', $from_id);
+    if (isset($result['status']) && $result['status'] == 'successful') {
+        sendmessage($from_id, "✅ رمز عبور سرویس <b>{$nameloc['username']}</b> با موفقیت به <code>{$newpass}</code> تغییر یافت.", $keyboard, 'html');
+    } else {
+        sendmessage($from_id, "❌ خطا در تغییر رمز عبور: " . ($result['msg'] ?? 'نامشخص'), $keyboard, 'html');
+    }
 } elseif (preg_match('/product_(\w+)/', $datain, $dataget)) {
     $username = $dataget[1];
     $sql = "SELECT * FROM invoice WHERE id_invoice = :username AND id_user = :id_user";
@@ -1364,7 +1310,11 @@ $textonebuy
         'deactivev' => $textbotlang['users']['stateus']['disabled'],
     ][$status];
     #--------------[ expire ]---------------#
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs = isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs ? jdate('Y/m/d', $expireTs) : $textbotlang['users']['stateus']['Unlimited'];
     #-------------[ data_limit ]----------------#
     $LastTraffic = $DataUserOut['data_limit'] ? formatBytes($DataUserOut['data_limit']) : $textbotlang['users']['stateus']['Unlimited'];
     #---------------[ RemainingVolume ]--------------#
@@ -1373,7 +1323,7 @@ $textonebuy
     #---------------[ used_traffic ]--------------#
     $usedTrafficGb = $DataUserOut['used_traffic'] ? formatBytes($DataUserOut['used_traffic']) : $textbotlang['users']['stateus']['Notconsumed'];
     #--------------[ day ]---------------#
-    $timeDiff = $DataUserOut['expire'] - time();
+    $timeDiff = $expireTs ? ($expireTs - time()) : 0;
     if ($timeDiff < 0) {
         $day = 0;
     } else {
@@ -1428,6 +1378,14 @@ $textonebuy
             'callback_data' => "changelink_"
         ),
     );
+    // دکمه تغییر رمز برای SSH panels
+    $ssh_types = ['shahan', 'xpanel', 'rocket_ssh', 'dragon'];
+    if (in_array($marzban['type'], $ssh_types)) {
+        $keyboarddateservies['changepass'] = array(
+            'text' => '🔑 تغییر رمز عبور',
+            'callback_data' => "sshchangepass_"
+        );
+    }
     if ($marzban['status_extend'] == "off_extend") {
         unset($keyboarddateservies['extend']);
     }
@@ -1462,7 +1420,26 @@ $textonebuy
         $output = $DataUserOut['subscription_url'];
     }
     if ($marzban['config'] == "onconfig") {
-        $config = $DataUserOut['links'][0];
+        $config = $DataUserOut['links'][0] ?? '';
+    }
+    // SSH details
+    $ssh_details = "";
+    $ssh_types = ['shahan', 'xpanel', 'rocket_ssh', 'dragon'];
+    if (in_array($marzban['type'], $ssh_types)) {
+        $ssh_host = $marzban['linksubx'] ?: $marzban['url_panel'];
+        $ssh_host = preg_replace('#https?://#', '', $ssh_host);
+        $ssh_host = explode(':', $ssh_host)[0];
+        $ssh_ports = json_decode($marzban['proxies'], true) ?: [];
+        $ssh_port = $ssh_ports['ssh_port'] ?? ($marzban['version_panel'] ?: '22');
+        $udgpw = $ssh_ports['udgpw'] ?? '0';
+        $ssh_password = $DataUserOut['subscription_url'] ?? '';
+        $conn_limit = $DataUserOut['connection_limit'] ?? '';
+        $ssh_details = "\n🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : <code>{$ssh_port}</code>"
+. ($udgpw && $udgpw != '0' ? "\n🔌 Udgpw : <code>{$udgpw}</code>" : "") . "
+👤 Username : <code>{$DataUserOut['username']}</code>
+🔑 Password : <code>{$ssh_password}</code>"
+. ($conn_limit ? "\n📶 Connection Limit : {$conn_limit}" : "");
     }
     #-----------------------------#
     $keyboardsetting = json_encode($keyboardsetting);
@@ -1534,7 +1511,25 @@ $output
 ";
         }
     }
+    // اضافه کردن اطلاعات SSH به متن
+    if ($ssh_details) {
+        $textinfo .= "\n" . $ssh_details;
+    }
     Editmessagetext($from_id, $message_id, $textinfo, $keyboardsetting);
+} elseif (preg_match('/sshchangepass_(\w+)/', $datain, $dataget)) {
+    // تغییر رمز عبور SSH
+    $id_invoice = $dataget[1];
+    $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    $marzban = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
+    $ssh_types = ['shahan', 'xpanel', 'rocket_ssh', 'dragon'];
+    if (!in_array($marzban['type'], $ssh_types)) {
+        Editmessagetext($from_id, $message_id, "❌ تغییر رمز فقط برای سرویس‌های SSH امکان‌پذیر است", json_encode(['inline_keyboard' => [[['text' => '« بازگشت', 'callback_data' => "product_" . $id_invoice]]]]));
+        return;
+    }
+    update("user", "Processing_value_four", "sshchangepass_" . $id_invoice, "id", $from_id);
+    step('sshchangepass', $from_id);
+    $bakinfos = json_encode(['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => "product_" . $id_invoice]]]]);
+    Editmessagetext($from_id, $message_id, "🔑 رمز عبور جدید را ارسال کنید:\n\n⚠️ رمز باید بین 4 تا 16 کاراکتر باشد.", $bakinfos);
 } elseif (preg_match('/extend_(\w+)/', $datain, $dataget)) {
     $id_invoice = $dataget[1];
     savedata("clear", "id_invoice", $id_invoice);

@@ -413,6 +413,9 @@ switch ($data['actions'] ?? '') {
             $datainbound = json_encode($servies);
         } elseif ($panel['type'] == "ibsng" || $panel['type'] == "mikrotik") {
             $datainbound = $data['input'];
+        } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH panels use connection_limit as inbound (no protocol inbounds)
+            $datainbound = $data['input'];
         } else {
             sendJsonResponse(false, "panel_not_support_options", [], 200);
         }

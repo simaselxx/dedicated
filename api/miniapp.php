@@ -119,7 +119,11 @@ switch ($data['actions']) {
                 if ($DataUserOut['status'] == "Unsuccessful") {
                     $expire = "نامشخص";
                 } else {
-                    $expire = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : 'نامحدود';
+                    $expTs = $DataUserOut['expire'] ?? 0;
+                    if (!$expTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0) {
+                        $expTs = time() + (intval($DataUserOut['days_left']) * 86400);
+                    }
+                    $expire = $expTs ? jdate('Y/m/d', $expTs) : 'نامحدود';
                 }
                 $datauser[] = [
                     'username' => $invoice['username'],
@@ -208,6 +212,11 @@ switch ($data['actions']) {
                     'type' => "password",
                     'value' => $DataUserOut['password'] ?? ''
                 ];
+            } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+                $config[] = [
+                    'type' => "password",
+                    'value' => $DataUserOut['subscription_url'] ?? ''
+                ];
             }
             if (isset($DataUserOut['sub_updated_at']) && $DataUserOut['sub_updated_at']  !== null) {
                 $sub_updated = $DataUserOut['sub_updated_at'];
@@ -232,23 +241,36 @@ switch ($data['actions']) {
                 }
             }
             $expireTimestamp = isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) ? (int)$DataUserOut['expire'] : 0;
+            if (!$expireTimestamp && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0) {
+                $expireTimestamp = time() + (intval($DataUserOut['days_left']) * 86400);
+            }
             $expirationDate = $expireTimestamp ? jdate('Y/m/d', $expireTimestamp) : 'نامحدود';
             $usernameOutput = $DataUserOut['username'] ?? $invoice['username'];
+            $responseObj = array(
+                'status' => $DataUserOut['status'],
+                'username' => $usernameOutput,
+                'product_name' => $invoice['name_product'],
+                'total_traffic_gb' => $data_limit_bytes == 0 ? 'نامحدود' : round($data_limit, 2),
+                'used_traffic_gb' => round($used_Traffic, 2),
+                'remaining_traffic_gb' => $data_limit_bytes == 0 ? 'نامحدود' : round($remaining_traffic, 2),
+                'expiration_time' => $expirationDate,
+                'last_subscription_update' => $lastupdate,
+                'online_at' => $lastonline,
+                'service_output' => $config
+            );
+            // SSH panels: add extra fields
+            if (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+                $ssh_ports = parse_ssh_ports($panel);
+                $responseObj['ssh_host'] = get_ssh_display_host($panel);
+                $responseObj['ssh_port'] = $ssh_ports['ssh_port'];
+                $responseObj['udgpw_port'] = $ssh_ports['udgpw'];
+                $responseObj['connection_limit'] = $DataUserOut['connection_limit'] ?? 1;
+                $responseObj['password'] = $DataUserOut['subscription_url'] ?? '';
+            }
             echo json_encode([
                 'status' => true,
                 'msg' => "Successful",
-                'obj' => array(
-                    'status' => $DataUserOut['status'],
-                    'username' => $usernameOutput,
-                    'product_name' => $invoice['name_product'],
-                    'total_traffic_gb' => round($data_limit, 2),
-                    'used_traffic_gb' => round($used_Traffic, 2),
-                    'remaining_traffic_gb' => round($remaining_traffic, 2),
-                    'expiration_time' => $expirationDate,
-                    'last_subscription_update' => $lastupdate,
-                    'online_at' => $lastonline,
-                    'service_output' => $config
-                ),
+                'obj' => $responseObj,
             ]);
         } else {
             http_response_code(404);
@@ -631,8 +653,8 @@ switch ($data['actions']) {
                     'time_days' => intval($result['Service_time']),
                     'category_id' => $selected_category_id,
                     'country_id' => $panel['code_panel'],
-                    'time_range_id' => $result['Service_time']
-
+                    'time_range_id' => $result['Service_time'],
+                    'connection_limit' => (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon']) && !empty($result['inbounds']) && is_numeric($result['inbounds'])) ? intval($result['inbounds']) : null
                 ];
             }
             echo json_encode([
@@ -864,7 +886,41 @@ switch ($data['actions']) {
         error_log(json_encode($datatextbotget));
         $datatextbot['textafterpay'] = $panel['type'] == "Manualsale" ? $datatextbot['textmanual'] : $datatextbot['textafterpay'];
         $datatextbot['textafterpay'] = $panel['type'] == "WGDashboard" ? $datatextbot['text_wgdashboard'] :  $datatextbot['textafterpay'];
-        $datatextbot['textafterpay'] = $panel['type'] == "ibsng" || $panel['type'] == "mikrotik" ? $datatextbot['textafterpayibsng'] : $datatextbot['textafterpay'];
+        $datatextbot['textafterpay'] = $panel['type'] == "ibsng" || $panel['type'] == "mikrotik" || in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon']) ? $datatextbot['textafterpayibsng'] : $datatextbot['textafterpay'];
+
+        // SSH panels: override template with full SSH details
+        if (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            $ssh_ports = parse_ssh_ports($panel);
+            $ssh_host = get_ssh_display_host($panel);
+            $ssh_days_display = (intval($product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $product['Service_time'];
+            $ssh_volume = (intval($product['Volume_constraint']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $product['Volume_constraint'] . ' GB';
+            $ssh_expire_date = (intval($product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : date('Y/m/d', time() + (intval($product['Service_time']) * 86400));
+            $ssh_connection_limit = 1;
+            if (isset($product['inbounds']) && is_numeric($product['inbounds'])) {
+                $ssh_connection_limit = intval($product['inbounds']);
+            }
+            $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+            $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : {$ssh_ports['udgpw']}
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+📶 Connection Limit : {$ssh_connection_limit}
+⏳ Days : {$ssh_days_display}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : {$product['name_product']}
+🇺🇳 لوکیشن : {$panel['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+            sendMessageService($panel, $dataoutput['configs'], $output_config_link, $user_info['username'], null, $textcreatuser, $randomString, $user_info['id'], $image = '../images.jpg');
+        } else {
+
         if (intval($product['Service_time']) == 0) $product['Service_time'] = $textbotlang['users']['stateus']['Unlimited'];
         if (intval($product['Volume_constraint']) == 0) $product['Volume_constraint'] = $textbotlang['users']['stateus']['Unlimited'];
         $textcreatuser = str_replace('{username}', "<code>{$dataoutput['username']}</code>", $datatextbot['textafterpay']);
@@ -876,6 +932,7 @@ switch ($data['actions']) {
         $textcreatuser = str_replace('{links}', $config, $textcreatuser);
         $textcreatuser = str_replace('{links2}', $output_config_link, $textcreatuser);
         sendMessageService($panel, $dataoutput['configs'], $output_config_link, $user_info['username'], null, $textcreatuser, $randomString, $user_info['id'], $image = '../images.jpg');
+        } // end non-SSH
         if (intval($product['price_product']) != 0) {
             $Balance_prim = $user_info['Balance'] - $product['price_product'];
             update("user", "Balance", $Balance_prim, "id", $user_info['id']);

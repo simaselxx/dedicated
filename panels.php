@@ -10,6 +10,11 @@ require_once __DIR__ . '/WGDashboard.php';
 require_once __DIR__ . '/s_ui.php';
 require_once __DIR__ . '/ibsng.php';
 require_once __DIR__ . '/mikrotik.php';
+require_once __DIR__ . '/ssh_helpers.php';
+require_once __DIR__ . '/shahan.php';
+require_once __DIR__ . '/xpanel.php';
+require_once __DIR__ . '/rocket_ssh.php';
+require_once __DIR__ . '/dragon.php';
 
 class ManagePanel
 {
@@ -366,6 +371,56 @@ class ManagePanel
                 $Output['username'] = $usernameC;
                 $Output['subscription_url'] = $password;
                 $Output['configs'] = [];
+            }
+        } elseif (in_array($Get_Data_Panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Create user
+            $password = generate_ssh_password();
+            $ports = parse_ssh_ports($Get_Data_Panel);
+            $traffic_gb = ($data_limit > 0) ? round($data_limit / pow(1024, 3), 2) : 0;
+            $diff_days = ($expire != 0) ? max(1, intval(ceil(($expire - time()) / 86400))) : 30;
+            $multiuser = 1;
+            // Extract connection limit from product if available
+            if (isset($Get_Data_Product['inbounds']) && is_numeric($Get_Data_Product['inbounds'])) {
+                $multiuser = intval($Get_Data_Product['inbounds']);
+            }
+            // Determine expiry mode: product-level overrides panel-level
+            // data_limit_reset values for SSH: 'first_connect' or 'date_based'
+            $first_login = true;
+            $product_expiry = isset($Get_Data_Product['data_limit_reset']) ? $Get_Data_Product['data_limit_reset'] : '';
+            $panel_conecton = isset($Get_Data_Panel['conecton']) ? $Get_Data_Panel['conecton'] : 'offconecton';
+            if ($product_expiry == 'date_based') {
+                $first_login = false;
+            } elseif ($product_expiry == 'first_connect') {
+                $first_login = true;
+            } elseif ($panel_conecton == 'offconecton') {
+                $first_login = false;
+            }
+
+            error_log("SSH CREATE: type={$Get_Data_Panel['type']}, panel={$Get_Data_Panel['name_panel']}, user=$usernameC, traffic=$traffic_gb, multi=$multiuser, days=$diff_days, first=$first_login");
+
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                $data_Output = add_user_shahan($Get_Data_Panel['name_panel'], $usernameC, $password, $traffic_gb, $multiuser, $diff_days, $note, $first_login);
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                $data_Output = add_user_xpanel($Get_Data_Panel['name_panel'], $usernameC, $password, $traffic_gb, $multiuser, $diff_days, $note, $first_login);
+            } elseif ($Get_Data_Panel['type'] == 'rocket_ssh') {
+                $data_Output = add_user_rocket($Get_Data_Panel['name_panel'], $usernameC, $password, $traffic_gb, $multiuser, $diff_days, $note, $first_login);
+            } elseif ($Get_Data_Panel['type'] == 'dragon') {
+                $data_Output = add_user_dragon($Get_Data_Panel['name_panel'], $usernameC, $password, $diff_days, $multiuser);
+            }
+
+            error_log("SSH CREATE RESULT: " . print_r($data_Output, true));
+
+            if (isset($data_Output['error'])) {
+                $Output['status'] = 'Unsuccessful';
+                $Output['msg'] = $data_Output['error'];
+            } elseif (isset($data_Output['status']) && $data_Output['status'] === true) {
+                $Output['status'] = 'successful';
+                $Output['username'] = $usernameC;
+                $Output['subscription_url'] = $password;
+                $Output['configs'] = [];
+            } else {
+                $Output['status'] = 'Unsuccessful';
+                $Output['msg'] = $data_Output['msg'] ?? 'Unknown error';
             }
         } else {
             $Output['status'] = 'Unsuccessful';
@@ -883,6 +938,50 @@ class ManagePanel
                     'sub_last_user_agent' => null,
                 );
             }
+        } elseif (in_array($Get_Data_Panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Get user data
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                $user_data = get_user_info_shahan($username, $Get_Data_Panel['name_panel']);
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                $user_data = get_user_info_xpanel($username, $Get_Data_Panel['name_panel']);
+            } elseif ($Get_Data_Panel['type'] == 'rocket_ssh') {
+                $user_data = get_user_info_rocket($username, $Get_Data_Panel['name_panel']);
+            } elseif ($Get_Data_Panel['type'] == 'dragon') {
+                $user_data = get_user_info_dragon($Get_Data_Panel['name_panel'], $username);
+            }
+
+            if (isset($user_data['error'])) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $user_data['error']
+                );
+            } else {
+                $expire_ts = null;
+                if (isset($user_data['expire']) && $user_data['expire'] !== null && is_numeric($user_data['expire'])) {
+                    $expire_ts = intval($user_data['expire']);
+                }
+                $days_left_val = isset($user_data['days_left']) && is_numeric($user_data['days_left']) ? intval($user_data['days_left']) : 0;
+                if (!$expire_ts && $days_left_val > 0 && $days_left_val < 9999) {
+                    $expire_ts = time() + ($days_left_val * 86400);
+                }
+                $Output = array(
+                    'status' => $user_data['status'] ?? 'active',
+                    'username' => $user_data['username'],
+                    'data_limit' => $user_data['data_limit'],
+                    'expire' => $expire_ts,
+                    'online_at' => $user_data['online_at'] ?? null,
+                    'used_traffic' => $user_data['used_traffic'] ?? null,
+                    'links' => [],
+                    'subscription_url' => $user_data['password'] ?? '',
+                    'sub_updated_at' => null,
+                    'sub_last_user_agent' => null,
+                    'uuid' => null,
+                    'connection_limit' => $user_data['connection_limit'] ?? null,
+                    'days_left' => $user_data['days_left'] ?? null,
+                    'is_online' => $user_data['is_online'] ?? false,
+                    'online_count' => $user_data['online_count'] ?? 0,
+                );
+            }
         } else {
             $Output = array(
                 'status' => 'Unsuccessful',
@@ -1238,6 +1337,29 @@ class ManagePanel
                     'username' => $username,
                 );
             }
+        } elseif (in_array($Get_Data_Panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Remove user
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                $result = remove_user_shahan($Get_Data_Panel['name_panel'], $username);
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                $result = remove_user_xpanel($Get_Data_Panel['name_panel'], $username);
+            } elseif ($Get_Data_Panel['type'] == 'rocket_ssh') {
+                $result = remove_user_rocket($Get_Data_Panel['name_panel'], $username);
+            } elseif ($Get_Data_Panel['type'] == 'dragon') {
+                $result = remove_user_dragon($Get_Data_Panel['name_panel'], $username);
+            }
+
+            if (isset($result['error'])) {
+                $Output = array(
+                    'status' => 'Unsuccessful',
+                    'msg' => $result['error']
+                );
+            } else {
+                $Output = array(
+                    'status' => 'successful',
+                    'username' => $username,
+                );
+            }
         } else {
             $Output = array(
                 'status' => 'Unsuccessful',
@@ -1498,6 +1620,96 @@ class ManagePanel
                 'status' => true,
                 'data' => $modify
             );
+        } elseif (in_array($Get_Data_Panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Modify user
+
+            // For Rocket: pass config directly, let edit_user_rocket handle raw values
+            if ($Get_Data_Panel['type'] == 'rocket_ssh') {
+                $data = [];
+                if (isset($config['password'])) $data['password'] = $config['password'];
+                if (isset($config['data_limit'])) $data['traffic'] = round($config['data_limit'] / pow(1024, 3), 2);
+                if (isset($config['expire'])) $data['expdate'] = date('Y-m-d', $config['expire']);
+                if (isset($config['days'])) $data['days'] = intval($config['days']);
+                if (isset($config['connection_limit'])) $data['connection_limit'] = $config['connection_limit'];
+                if (isset($config['multiuser'])) $data['connection_limit'] = $config['multiuser'];
+                if (isset($config['desc'])) $data['desc'] = $config['desc'];
+                error_log("ROCKET MODIFYUSER: " . json_encode($data));
+                $result = edit_user_rocket($Get_Data_Panel['name_panel'], $username, $data);
+                if ($result === null) return array('status' => false, 'msg' => 'Panel type not supported');
+                if (isset($result['error'])) return array('status' => false, 'msg' => $result['error']);
+                return array('status' => true, 'data' => $result);
+            }
+
+            // For other SSH panels: get current user info to preserve values
+            $user_info = null;
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                $user_info = get_user_info_shahan($username, $Get_Data_Panel['name_panel']);
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                $user_info = get_user_info_xpanel($username, $Get_Data_Panel['name_panel']);
+            } elseif ($Get_Data_Panel['type'] == 'dragon') {
+                $user_info = get_user_info_dragon($Get_Data_Panel['name_panel'], $username);
+            }
+            if ($user_info && isset($user_info['error'])) {
+                return array('status' => false, 'msg' => $user_info['error']);
+            }
+
+            // Build data from config, falling back to current user values
+            $data = [];
+            $data['password'] = $config['password'] ?? ($user_info['password'] ?? '');
+            if (isset($config['data_limit'])) {
+                $data['traffic'] = round($config['data_limit'] / pow(1024, 3), 2);
+            } else {
+                $cur_traffic = $user_info['data_limit'] ?? null;
+                $data['traffic'] = $cur_traffic ? round($cur_traffic / pow(1024, 3), 2) : 0;
+            }
+            if (isset($config['expire'])) {
+                $data['days'] = max(1, intval(ceil(($config['expire'] - time()) / 86400)));
+                $data['expdate'] = date('Y-m-d', $config['expire']);
+            } else {
+                $cur_days = $user_info['days_left'] ?? 30;
+                if (!is_numeric($cur_days) || intval($cur_days) <= 0) $cur_days = 30;
+                if (intval($cur_days) >= 9999) $cur_days = 9999;
+                $data['days'] = $cur_days;
+            }
+            $data['connection_limit'] = $config['connection_limit'] ?? $config['multiuser'] ?? ($user_info['connection_limit'] ?? 1);
+            $data['desc'] = $config['desc'] ?? ($user_info['desc'] ?? '');
+            $data['activate'] = 'active';
+            $data['multiuser'] = $data['connection_limit'];
+
+            $result = null;
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                $result = edit_user_shahan(
+                    $Get_Data_Panel['name_panel'], $username,
+                    $data['password'],
+                    $data['traffic'],
+                    $data['connection_limit'],
+                    $data['days'],
+                    $data['desc']
+                );
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                $result = edit_user_xpanel($Get_Data_Panel['name_panel'], $username, $data);
+            } elseif ($Get_Data_Panel['type'] == 'dragon') {
+                if (isset($config['password'])) {
+                    $result = change_password_dragon($Get_Data_Panel['name_panel'], $username, $config['password']);
+                } else {
+                    $result = renew_user_dragon(
+                        $Get_Data_Panel['name_panel'], $username,
+                        $data['days'] ?? 30,
+                        $data['connection_limit'] ?? 1
+                    );
+                }
+            }
+
+            if ($result === null) {
+                return array('status' => false, 'msg' => 'Panel type not supported');
+            }
+            if (isset($result['error'])) {
+                return array('status' => false, 'msg' => $result['error']);
+            }
+            return array(
+                'status' => true,
+                'data' => $result
+            );
         }
     }
     function Change_status($username, $name_panel)
@@ -1597,6 +1809,33 @@ class ManagePanel
             $Output = array(
                 'status' => 'successful',
                 'msg' => null
+            );
+        } elseif (in_array($Get_Data_Panel['type'], ['shahan', 'xpanel', 'rocket_ssh'])) {
+            // SSH Panel - Toggle status
+            if ($Get_Data_Panel['type'] == 'shahan') {
+                if ($DataUserOut['status'] == 'active') {
+                    $result = disable_user_shahan($Get_Data_Panel['name_panel'], $username);
+                } else {
+                    $result = enable_user_shahan($Get_Data_Panel['name_panel'], $username);
+                }
+            } elseif ($Get_Data_Panel['type'] == 'xpanel') {
+                if ($DataUserOut['status'] == 'active') {
+                    $result = disable_user_xpanel($Get_Data_Panel['name_panel'], $username);
+                } else {
+                    $result = enable_user_xpanel($Get_Data_Panel['name_panel'], $username);
+                }
+            } elseif ($Get_Data_Panel['type'] == 'rocket_ssh') {
+                $result = toggle_active_rocket($Get_Data_Panel['name_panel'], $username);
+            }
+            $Output = array(
+                'status' => (isset($result['status']) && $result['status'] === true) ? 'successful' : 'Unsuccessful',
+                'msg' => $result['msg'] ?? $result['error'] ?? null
+            );
+        } elseif ($Get_Data_Panel['type'] == 'dragon') {
+            // Dragon does not support enable/disable
+            $Output = array(
+                'status' => 'Unsuccessful',
+                'msg' => 'Enable/Disable not supported for Dragon panel'
             );
         }
 
@@ -1735,6 +1974,24 @@ class ManagePanel
             ResetUserDataUsages_ui($username, $name_panel);
             return array(
                 'status' => true
+            );
+        } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh'])) {
+            // SSH Panel - Reset traffic
+            if ($panel['type'] == 'shahan') {
+                $result = reset_traffic_shahan($name_panel, $username);
+            } elseif ($panel['type'] == 'xpanel') {
+                $result = reset_traffic_xpanel($name_panel, $username);
+            } elseif ($panel['type'] == 'rocket_ssh') {
+                $result = reset_traffic_rocket($name_panel, $username);
+            }
+            return array(
+                'status' => (isset($result['status']) && $result['status'] === true)
+            );
+        } elseif ($panel['type'] == 'dragon') {
+            // Dragon does not support traffic reset
+            return array(
+                'status' => false,
+                'msg' => 'Traffic reset not supported for Dragon panel'
             );
         }
     }
@@ -1925,6 +2182,18 @@ class ManagePanel
                 "volume" => $data_limit_new,
                 "expiry" => $time_new
             );
+        } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Build data for Modifyuser
+            $traffic_gb = ($data_limit_new > 0) ? round($data_limit_new / pow(1024, 3), 2) : 0;
+            $days_remaining = ($time_new > 0) ? max(1, intval(ceil(($time_new - time()) / 86400))) : 30;
+            $data = array(
+                'data_limit' => $data_limit_new,
+                'expire' => $time_new,
+                'traffic' => $traffic_gb,
+                'days' => $days_remaining,
+                'expdate' => ($time_new > 0) ? date('Y-m-d', $time_new) : '',
+                'connection_limit' => $data_user['connection_limit'] ?? 1,
+            );
         }
         $extend = $this->Modifyuser($username, $panel['name_panel'], $data);
         if ($extend['status'] == false) {
@@ -2037,6 +2306,12 @@ class ManagePanel
         } elseif ($panel['type'] == "s_ui") {
             $data = array(
                 "volume" => $new_limit,
+            );
+        } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Extra volume
+            $data = array(
+                'data_limit' => $new_limit,
+                'traffic' => ($new_limit > 0) ? round($new_limit / pow(1024, 3), 2) : 0,
             );
         }
         $extra_volume = $this->Modifyuser($username_account, $panel['name_panel'], $data);
@@ -2155,6 +2430,14 @@ class ManagePanel
         } elseif ($panel['type'] == "s_ui") {
             $data = array(
                 "expiry" => $new_limit,
+            );
+        } elseif (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            // SSH Panel - Extra time
+            $days_remaining = ($new_limit > 0) ? max(1, intval(ceil(($new_limit - time()) / 86400))) : 30;
+            $data = array(
+                'expire' => $new_limit,
+                'days' => $days_remaining,
+                'expdate' => ($new_limit > 0) ? date('Y-m-d', $new_limit) : '',
             );
         }
         $extra_time = $this->Modifyuser($username_account, $panel['name_panel'], $data);

@@ -467,6 +467,7 @@ try {
         addFieldToTable("product", "data_limit_reset", "no_reset", "varchar(100)");
         addFieldToTable("product", "agent", "f", "varchar(50)");
         addFieldToTable("product", "code_product", null, "varchar(50)");
+        addFieldToTable("product", "connection_limit", "1", "varchar(10)");
     }
 } catch (Exception $e) {
     file_put_contents('error_log', $e->getMessage());
@@ -736,12 +737,22 @@ try {
 🧑‍🦯 شما میتوانید شیوه اتصال را  با فشردن دکمه زیر و انتخاب سیستم عامل خود را دریافت کنید";
     $textafterpayibsng = "✅ سرویس با موفقیت ایجاد شد
 
-👤 نام کاربری سرویس : {username}
-🔑 رمز عبور سرویس :  <code>{password}</code>
-🌿 نام سرویس:  {name_service}
-‏🇺🇳 لوکیشن: {location}
-⏳ مدت زمان: {day}  روز
-🗜 حجم سرویس:  {volume} گیگابایت
+🌐 SSH Host : <code>{ssh_host}</code>
+🔌 Port : {ssh_port}
+🔌 Udgpw : {udgpw}
+👤 Username : <code>{username}</code>
+🔑 Password : <code>{password}</code>
+
+📶 Connection Limit : {connection_limit}
+⏳ Days : {day}
+📅 Expiry : {expire_date}
+🗜 Traffic : {volume}
+
+🌿 نام سرویس : {name_service}
+‏🇺🇳 لوکیشن : {location}
+
+🔐 لینک NPVT :
+<code>{npvt}</code>
 
 🧑‍🦯 شما میتوانید شیوه اتصال را  با فشردن دکمه زیر و انتخاب سیستم عامل خود را دریافت کنید";
     $textmanual = "✅ سرویس با موفقیت ایجاد شد

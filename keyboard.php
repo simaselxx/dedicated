@@ -935,6 +935,7 @@ $change_product = json_encode([
         [['text' => "نام محصول"],['text' => "نوع کاربری"]],
         [['text' => "نوع ریست حجم"],['text' => "یادداشت"]],
         [['text' => "موقعیت محصول"],['text' => "دسته بندی"]],
+        [['text' => "👥 تعداد کاربر"],['text' => "⏱ نوع انقضا"]],
         [['text' => "🎛 تنظیم اینباند"],['text' => "نمایش برای خرید اول"]],
         [['text' => "مخفی کردن پنل"],['text' => "حذف کلی پنل های مخفی"]],
         [['text' => $textbotlang['Admin']['backadmin']],['text' => $textbotlang['Admin']['backmenu']]]
@@ -1015,6 +1016,20 @@ $option_mikrotik = json_encode([
         [['text' => "⏳ قیمت زمان اضافه"],['text' => "⏳ قیمت زمان دلخواه"]],
         [['text' => "📍 حداقل حجم دلخواه"],['text' => "📍 حداکثر حجم دلخواه"]],
         [['text' => "📍 حداقل زمان دلخواه"],['text' => "📍 حداکثر زمان دلخواه"]],
+        [['text' => "🫣 مخفی کردن پنل برای یک کاربر"]],
+        [['text' => "❌  حذف کاربر از لیست مخفی شدگان"]],
+        [['text' => $textbotlang['Admin']['backadmin']],['text' => $textbotlang['Admin']['backmenu']]]
+    ],
+    'resize_keyboard' => true
+]);
+$optionssh = json_encode([
+    'keyboard' => [
+        [['text' => "⚙️ وضعیت قابلیت ها پنل"]],
+        [['text' => "✍️ نام پنل"],['text' => "❌ حذف پنل"]],
+        [['text' => "🔐 ویرایش رمز عبور"],['text' => "👤 ویرایش نام کاربری"]],
+        [['text'=>"🔗 ویرایش آدرس پنل"]],
+        [['text' => "🔋 روش تمدید سرویس"],['text' =>"💡 روش ساخت نام کاربری"]],
+        [['text' => "🚨 محدودیت ساخت اکانت"],['text'=> "📍 تغییر گروه کاربری"]],
         [['text' => "🫣 مخفی کردن پنل برای یک کاربر"]],
         [['text' => "❌  حذف کاربر از لیست مخفی شدگان"]],
         [['text' => $textbotlang['Admin']['backadmin']],['text' => $textbotlang['Admin']['backmenu']]]
@@ -1263,6 +1278,14 @@ $keyboardtypepanel = json_encode([
             ['text' => "میکروتیک", 'callback_data' => 'typepanel#mikrotik']
         ],
         [
+            ['text' => "شاهان SSH", 'callback_data' => 'typepanel#shahan'],
+            ['text' => "XPanel SSH", 'callback_data' => 'typepanel#xpanel']
+        ],
+        [
+            ['text' => "Rocket SSH", 'callback_data' => 'typepanel#rocket_ssh'],
+            ['text' => "Dragon SSH", 'callback_data' => 'typepanel#dragon']
+        ],
+        [
             ['text' => $textbotlang['Admin']['backadmin'] , 'callback_data' => 'admin']
         ]
     ],
@@ -1480,6 +1503,144 @@ function KeyboardCategory($location,$agent,$backuser = "backuser"){
         ['text' => "▶️ بازگشت به منوی قبل","callback_data" => $backuser],
     ];
     return json_encode($list_category);
+}
+
+/**
+ * Keyboard for showing categories FIRST (before servers)
+ * Used when user clicks "buy" and statuscategorygenral == "oncategorys"
+ */
+function KeyboardCategoryFirstBuy($agent, $backuser = "backuser"){
+    global $pdo, $textbotlang;
+    $stmt = $pdo->prepare("SELECT DISTINCT c.* FROM category c
+        INNER JOIN product p ON p.category = c.remark
+        WHERE p.agent = :agent");
+    $stmt->bindParam(':agent', $agent);
+    $stmt->execute();
+    $list_category = ['inline_keyboard' => []];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $list_category['inline_keyboard'][] = [['text' => $row['remark'], 'callback_data' => "categoryfirst_" . $row['id']]];
+    }
+    $list_category['inline_keyboard'][] = [
+        ['text' => $textbotlang['users']['backbtn'] ?? "▶️ بازگشت", 'callback_data' => $backuser],
+    ];
+    return json_encode($list_category);
+}
+
+/**
+ * Keyboard for showing servers AFTER category selection
+ * Shows only servers that have products in the selected category
+ */
+function KeyboardServersForCategory($category_remark, $agent, $backuser = "backuser"){
+    global $pdo, $textbotlang, $from_id;
+    // Get servers that have products in this category
+    $stmt = $pdo->prepare("SELECT DISTINCT mp.* FROM marzban_panel mp
+        INNER JOIN product p ON (p.Location = mp.name_panel OR p.Location = '/all')
+        WHERE mp.status = 'active'
+        AND (mp.agent = :agent OR mp.agent = 'all')
+        AND p.agent = :agent2
+        AND p.category = :category");
+    $stmt->bindParam(':agent', $agent);
+    $stmt->bindParam(':agent2', $agent);
+    $stmt->bindParam(':category', $category_remark);
+    $stmt->execute();
+    $list_servers = ['inline_keyboard' => []];
+    while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if($result['hide_user'] != null && in_array($from_id, json_decode($result['hide_user'], true))) continue;
+        $list_servers['inline_keyboard'][] = [['text' => $result['name_panel'], 'callback_data' => "locationcat_{$result['code_panel']}"]];
+    }
+    $list_servers['inline_keyboard'][] = [
+        ['text' => $textbotlang['users']['backbtn'] ?? "▶️ بازگشت", 'callback_data' => $backuser],
+    ];
+    return json_encode($list_servers);
+}
+
+/**
+ * Keyboard for showing categories in "My Services" section
+ * Shows only categories that have products on servers where user has active services
+ */
+function KeyboardCategoryForMyServices($user_id, $backuser = "backuser"){
+    global $pdo, $textbotlang;
+    // Get distinct categories from products that are on servers where user has services
+    $stmt = $pdo->prepare("
+        SELECT DISTINCT c.id, c.remark FROM category c
+        INNER JOIN product p ON p.category = c.remark
+        INNER JOIN marzban_panel mp ON (p.Location = mp.name_panel OR p.Location = '/all')
+        INNER JOIN invoice i ON i.Service_location = mp.name_panel
+        WHERE i.id_user = :user_id
+        AND (i.status = 'active' OR i.status = 'end_of_time' OR i.status = 'end_of_volume'
+             OR i.status = 'sendedwarn' OR i.status = 'send_on_hold' OR i.status = 'disablebyadmin')
+    ");
+    $stmt->bindParam(':user_id', $user_id);
+    $stmt->execute();
+
+    $list_category = ['inline_keyboard' => []];
+    $categories_found = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (!isset($categories_found[$row['id']])) {
+            $list_category['inline_keyboard'][] = [['text' => $row['remark'], 'callback_data' => "myservicescategory_" . $row['id']]];
+            $categories_found[$row['id']] = true;
+        }
+    }
+
+    // Add "Show All" button
+    $list_category['inline_keyboard'][] = [['text' => "📋 نمایش همه سرویس‌ها", 'callback_data' => "myservicesall"]];
+
+    $list_category['inline_keyboard'][] = [
+        ['text' => $textbotlang['users']['backbtn'] ?? "▶️ بازگشت", 'callback_data' => $backuser],
+    ];
+    return json_encode($list_category);
+}
+
+/**
+ * Keyboard for showing categories in "Extend Service" section
+ * Shows only categories that have products on servers where user has active services
+ */
+function KeyboardCategoryForExtend($user_id, $backuser = "backuser"){
+    global $pdo, $textbotlang;
+    // Get distinct categories from products that are on servers where user has services
+    $stmt = $pdo->prepare("
+        SELECT DISTINCT c.id, c.remark FROM category c
+        INNER JOIN product p ON p.category = c.remark
+        INNER JOIN marzban_panel mp ON (p.Location = mp.name_panel OR p.Location = '/all')
+        INNER JOIN invoice i ON i.Service_location = mp.name_panel
+        WHERE i.id_user = :user_id
+        AND (i.status = 'active' OR i.status = 'end_of_time' OR i.status = 'end_of_volume'
+             OR i.status = 'sendedwarn' OR i.status = 'send_on_hold')
+    ");
+    $stmt->bindParam(':user_id', $user_id);
+    $stmt->execute();
+
+    $list_category = ['inline_keyboard' => []];
+    $categories_found = [];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (!isset($categories_found[$row['id']])) {
+            $list_category['inline_keyboard'][] = [['text' => $row['remark'], 'callback_data' => "extendcategory_" . $row['id']]];
+            $categories_found[$row['id']] = true;
+        }
+    }
+
+    // Add "Show All" button
+    $list_category['inline_keyboard'][] = [['text' => "📋 نمایش همه سرویس‌ها", 'callback_data' => "extendall"]];
+
+    $list_category['inline_keyboard'][] = [
+        ['text' => $textbotlang['users']['backbtn'] ?? "▶️ بازگشت", 'callback_data' => $backuser],
+    ];
+    return json_encode($list_category);
+}
+
+/**
+ * Get servers (Service_locations) that have products in a specific category
+ */
+function getServersForCategory($category_remark){
+    global $pdo;
+    $stmt = $pdo->prepare("
+        SELECT DISTINCT mp.name_panel FROM marzban_panel mp
+        INNER JOIN product p ON (p.Location = mp.name_panel OR p.Location = '/all')
+        WHERE p.category = :category
+    ");
+    $stmt->bindParam(':category', $category_remark);
+    $stmt->execute();
+    return $stmt->fetchAll(PDO::FETCH_COLUMN);
 }
 
 function keyboardTimeCategory($name_panel,$agent,$callback_data = "producttime_",$callback_data_back = "backuser",$statuscustomvolume = false,$statusbtnextend = false){

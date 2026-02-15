@@ -101,10 +101,6 @@ $keyboardadmin = json_encode([
 $keyboardprice = json_encode([
     'keyboard' => [
         [
-            ['text' => "🔋 قیمت حجم"],
-            ['text' => "⌛️ قیمت زمان"],
-        ],
-        [
             ['text' => "💰 تنظیم قیمت محصول"],
             ['text' => "✏️ تنظیم نام محصول"],
         ],
@@ -227,4 +223,49 @@ function KeyboardCategory($location, $agent, $backuser = "backuser")
         ['text' => "▶️ بازگشت به منوی قبل", "callback_data" => $backuser],
     ];
     return json_encode($list_category);
+}
+
+// Show all categories for agent (without location filter) - for new flow: category first
+function KeyboardCategoryAll($agent, $backuser = "backuser")
+{
+    global $pdo;
+    $stmt = $pdo->prepare("SELECT * FROM category");
+    $stmt->execute();
+    $list_category = ['inline_keyboard' => [],];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $stmts = $pdo->prepare("SELECT * FROM product WHERE category = :category AND agent = :agent");
+        $stmts->bindParam(':category', $row['remark'], PDO::PARAM_STR);
+        $stmts->bindParam(':agent', $agent);
+        $stmts->execute();
+        if ($stmts->rowCount() == 0) continue;
+        $list_category['inline_keyboard'][] = [['text' => $row['remark'], 'callback_data' => "buycategory_" . $row['id']]];
+    }
+    $list_category['inline_keyboard'][] = [
+        ['text' => "▶️ بازگشت به منوی قبل", "callback_data" => $backuser],
+    ];
+    return json_encode($list_category);
+}
+
+// Show servers that have products in a specific category - for new flow
+function KeyboardServersForCategory($category, $agent, $backuser = "backuser")
+{
+    global $pdo;
+    $hide_panel = json_decode(select("botsaz", "hide_panel", "id_user", select("user", "id", "agent", $agent, "select")['id'], "select")['hide_panel'] ?? '[]', true);
+    $stmt = $pdo->prepare("SELECT DISTINCT mp.* FROM marzban_panel mp
+        INNER JOIN product p ON (p.Location = mp.name_panel OR p.Location = '/all')
+        WHERE mp.status = 'active' AND (mp.agent = :agent OR mp.agent = 'all')
+        AND p.category = :category AND p.agent = :agent2");
+    $stmt->bindParam(':agent', $agent);
+    $stmt->bindParam(':agent2', $agent);
+    $stmt->bindParam(':category', $category);
+    $stmt->execute();
+    $list_servers = ['inline_keyboard' => [],];
+    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (in_array($row['name_panel'], $hide_panel ?? [])) continue;
+        $list_servers['inline_keyboard'][] = [['text' => $row['name_panel'], 'callback_data' => "buyserver_" . $row['code_panel']]];
+    }
+    $list_servers['inline_keyboard'][] = [
+        ['text' => "▶️ بازگشت به منوی قبل", "callback_data" => $backuser],
+    ];
+    return json_encode($list_servers);
 }

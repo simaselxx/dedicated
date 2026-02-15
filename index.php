@@ -7,7 +7,7 @@ ini_set('memory_limit', '-1');
 require_once 'config.php';
 require_once 'botapi.php';
 require_once 'jdf.php';
-require_once 'functions.php';
+require_once 'function.php';
 require_once 'keyboard.php';
 require_once 'vendor/autoload.php';
 require_once 'panels.php';
@@ -525,12 +525,20 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     update("user", "number", $user_phone, "id", $from_id);
     step('home', $from_id);
 } elseif ($text == $datatextbot['text_Purchased_services'] || $datain == "backorder" || $text == "/services") {
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :id_user AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold')");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = :id_user AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold' OR status = 'disablebyadmin')");
     $stmt->bindParam(':id_user', $from_id);
     $stmt->execute();
     $invoices = $stmt->fetch(PDO::FETCH_ASSOC);
     if (is_null($invoices) && $setting['NotUser'] == "offnotuser") {
         sendmessage($from_id, $textbotlang['users']['sell']['service_not_available'], null, 'html');
+        return;
+    }
+
+    // Check if category-first mode is enabled - show categories before services
+    if ($setting['statuscategorygenral'] == "oncategorys" && $datain != "backorder") {
+        step('home', $from_id);  // Reset step to prevent number input errors
+        $category_keyboard = KeyboardCategoryForMyServices($from_id, "backuser");
+        sendmessage($from_id, "📌 دسته بندی سرویس‌های خود را انتخاب کنید:", $category_keyboard, 'html');
         return;
     }
 
@@ -542,7 +550,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -590,6 +598,383 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     } else {
         sendmessage($from_id, $textbotlang['users']['sell']['service_sell'], $keyboard_json, 'html');
     }
+} elseif (preg_match('/^myservicescategory_(.*)/', $datain, $dataget)) {
+    // User selected a category in My Services - show filtered services
+    step('home', $from_id);  // Reset step
+    $category_id = $dataget[1];
+    $category_data = select("category", "*", "id", $category_id, "select");
+    $category_remark = $category_data['remark'];
+
+    // Get servers that have products in this category
+    $servers = getServersForCategory($category_remark);
+    if (empty($servers)) {
+        sendmessage($from_id, "❌ سرویسی در این دسته بندی یافت نشد.", null, 'html');
+        return;
+    }
+
+    // Build SQL IN clause for servers
+    $servers_list = "'" . implode("','", $servers) . "'";
+
+    $pages = 1;
+    update("user", "pagenumber", $pages, "id", $from_id);
+    // Save selected category for pagination
+    savedata('clear', "myservices_category", $category_remark);
+
+    $page = 1;
+    $items_per_page = 20;
+    $start_index = ($page - 1) * $items_per_page;
+    $keyboardlists = ['inline_keyboard' => []];
+
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+        AND Service_location IN ($servers_list)
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin')
+        ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt->execute();
+
+    $service_count = 0;
+    if ($setting['statusnamecustom'] == 'onnamecustom') {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $data = "";
+            if ($row['note'] != null) $data = " | {$row['note']}";
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            $service_count++;
+        }
+    } else {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            $service_count++;
+        }
+    }
+
+    if ($service_count == 0) {
+        $keyboardlists['inline_keyboard'][] = [['text' => "❌ سرویسی یافت نشد", 'callback_data' => "none"]];
+    }
+
+    $pagination_buttons = [
+        ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_cat'],
+        ['text' => $textbotlang['users']['search']['title'], 'callback_data' => 'searchservicecat']
+    ];
+    $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+    $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtomyservicescategory']];
+
+    $keyboard_json = json_encode($keyboardlists);
+    Editmessagetext($from_id, $message_id, "📋 سرویس‌های شما در دسته «{$category_remark}»:", $keyboard_json);
+} elseif ($datain == "myservicesall") {
+    // Show all services without category filter
+    step('home', $from_id);  // Reset step
+    $pages = 1;
+    update("user", "pagenumber", $pages, "id", $from_id);
+    savedata('clear', "myservices_category", "");
+
+    $page = 1;
+    $items_per_page = 20;
+    $start_index = ($page - 1) * $items_per_page;
+    $keyboardlists = ['inline_keyboard' => []];
+
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin')
+        ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt->execute();
+
+    if ($setting['statusnamecustom'] == 'onnamecustom') {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $data = "";
+            if ($row['note'] != null) $data = " | {$row['note']}";
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+        }
+    } else {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+        }
+    }
+
+    $pagination_buttons = [
+        ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page'],
+        ['text' => $textbotlang['users']['search']['title'], 'callback_data' => 'searchservice']
+    ];
+    $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+    $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtomyservicescategory']];
+
+    $keyboard_json = json_encode($keyboardlists);
+    Editmessagetext($from_id, $message_id, $textbotlang['users']['sell']['service_sell'], $keyboard_json);
+} elseif ($datain == "backtomyservicescategory") {
+    // Back to category selection in My Services
+    step('home', $from_id);  // Reset step
+    $category_keyboard = KeyboardCategoryForMyServices($from_id, "backuser");
+    Editmessagetext($from_id, $message_id, "📌 دسته بندی سرویس‌های خود را انتخاب کنید:", $category_keyboard);
+} elseif ($datain == 'next_page_cat') {
+    // Pagination for category-filtered services
+    $userdate = json_decode($user['Processing_value'], true);
+    $category_remark = $userdate['myservices_category'] ?? '';
+
+    if (empty($category_remark)) {
+        // Fallback to all services
+        $datain = 'next_page';
+    } else {
+        $servers = getServersForCategory($category_remark);
+        $servers_list = "'" . implode("','", $servers) . "'";
+
+        $numpage_stmt = $pdo->prepare("SELECT COUNT(*) FROM invoice WHERE id_user = '$from_id'
+            AND Service_location IN ($servers_list)
+            AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+                 OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin')");
+        $numpage_stmt->execute();
+        $numpage = $numpage_stmt->fetchColumn();
+
+        $page = $user['pagenumber'];
+        $items_per_page = 20;
+        $sum = $user['pagenumber'] * $items_per_page;
+        $next_page = ($sum >= $numpage) ? 1 : $page + 1;
+        $start_index = ($next_page - 1) * $items_per_page;
+
+        $keyboardlists = ['inline_keyboard' => []];
+        $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+            AND Service_location IN ($servers_list)
+            AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+                 OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin')
+            ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+        $stmt->execute();
+
+        if ($setting['statusnamecustom'] == 'onnamecustom') {
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $data = "";
+                if ($row['note'] != null) $data = " | {$row['note']}";
+                $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            }
+        } else {
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            }
+        }
+
+        $pagination_buttons = [
+            ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_cat'],
+            ['text' => $textbotlang['users']['page']['previous'], 'callback_data' => 'previous_page_cat']
+        ];
+        $keyboardlists['inline_keyboard'][] = [['text' => $textbotlang['users']['search']['title'], 'callback_data' => 'searchservicecat']];
+        $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+        $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtomyservicescategory']];
+
+        $keyboard_json = json_encode($keyboardlists);
+        update("user", "pagenumber", $next_page, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "📋 سرویس‌های شما در دسته «{$category_remark}»:", $keyboard_json);
+        return;
+    }
+} elseif ($datain == 'previous_page_cat') {
+    // Previous page for category-filtered services
+    $userdate = json_decode($user['Processing_value'], true);
+    $category_remark = $userdate['myservices_category'] ?? '';
+
+    if (empty($category_remark)) {
+        $datain = 'previous_page';
+    } else {
+        $servers = getServersForCategory($category_remark);
+        $servers_list = "'" . implode("','", $servers) . "'";
+
+        $page = $user['pagenumber'];
+        $items_per_page = 20;
+        $previous_page = ($page <= 1) ? 1 : $page - 1;
+        $start_index = ($previous_page - 1) * $items_per_page;
+
+        $keyboardlists = ['inline_keyboard' => []];
+        $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+            AND Service_location IN ($servers_list)
+            AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+                 OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin')
+            ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+        $stmt->execute();
+
+        if ($setting['statusnamecustom'] == 'onnamecustom') {
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $data = "";
+                if ($row['note'] != null) $data = " | {$row['note']}";
+                $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            }
+        } else {
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "product_" . $row['id_invoice']]];
+            }
+        }
+
+        $pagination_buttons = [
+            ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_cat'],
+            ['text' => $textbotlang['users']['page']['previous'], 'callback_data' => 'previous_page_cat']
+        ];
+        $keyboardlists['inline_keyboard'][] = [['text' => $textbotlang['users']['search']['title'], 'callback_data' => 'searchservicecat']];
+        $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+        $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtomyservicescategory']];
+
+        $keyboard_json = json_encode($keyboardlists);
+        update("user", "pagenumber", $previous_page, "id", $from_id);
+        Editmessagetext($from_id, $message_id, "📋 سرویس‌های شما در دسته «{$category_remark}»:", $keyboard_json);
+        return;
+    }
+} elseif ($datain == 'searchservicecat') {
+    // Search in category-filtered services
+    sendmessage($from_id, $textbotlang['users']['search']['title_s'], $backuser, 'html');
+    step('searchservicecat', $from_id);
+} elseif (preg_match('/^extendcategory_(.*)/', $datain, $dataget)) {
+    // User selected a category for Extend Service - show filtered services
+    step('home', $from_id);  // Reset step
+    $category_id = $dataget[1];
+    $category_data = select("category", "*", "id", $category_id, "select");
+    $category_remark = $category_data['remark'];
+
+    // Get servers that have products in this category
+    $servers = getServersForCategory($category_remark);
+    if (empty($servers)) {
+        sendmessage($from_id, "❌ سرویسی در این دسته بندی یافت نشد.", null, 'html');
+        return;
+    }
+
+    // Build SQL IN clause for servers
+    $servers_list = "'" . implode("','", $servers) . "'";
+
+    $pages = 1;
+    update("user", "pagenumber", $pages, "id", $from_id);
+    // Save selected category for pagination
+    savedata('clear', "extend_category", $category_remark);
+
+    $page = 1;
+    $items_per_page = 20;
+    $start_index = ($page - 1) * $items_per_page;
+    $keyboardlists = ['inline_keyboard' => []];
+
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+        AND Service_location IN ($servers_list)
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold')
+        ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt->execute();
+
+    $service_count = 0;
+    if ($setting['statusnamecustom'] == 'onnamecustom') {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $data = "";
+            if ($row['note'] != null) $data = " | {$row['note']}";
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+            $service_count++;
+        }
+    } else {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+            $service_count++;
+        }
+    }
+
+    if ($service_count == 0) {
+        $keyboardlists['inline_keyboard'][] = [['text' => "❌ سرویسی یافت نشد", 'callback_data' => "none"]];
+    }
+
+    $pagination_buttons = [
+        ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_extend_cat']
+    ];
+    $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+    $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtoextendcategory']];
+
+    $keyboard_json = json_encode($keyboardlists);
+    Editmessagetext($from_id, $message_id, "📋 سرویس‌های شما در دسته «{$category_remark}» برای تمدید:", $keyboard_json);
+} elseif ($datain == "extendall") {
+    // Show all services for extend without category filter
+    step('home', $from_id);  // Reset step
+    $pages = 1;
+    update("user", "pagenumber", $pages, "id", $from_id);
+    savedata('clear', "extend_category", "");
+
+    $page = 1;
+    $items_per_page = 20;
+    $start_index = ($page - 1) * $items_per_page;
+    $keyboardlists = ['inline_keyboard' => []];
+
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold')
+        ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt->execute();
+
+    if ($setting['statusnamecustom'] == 'onnamecustom') {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $data = "";
+            if ($row['note'] != null) $data = " | {$row['note']}";
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+        }
+    } else {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+        }
+    }
+
+    $pagination_buttons = [
+        ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_extends']
+    ];
+    $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+    $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtoextendcategory']];
+
+    $keyboard_json = json_encode($keyboardlists);
+    Editmessagetext($from_id, $message_id, $textbotlang['users']['extend']['selectOrderDirect'], $keyboard_json);
+} elseif ($datain == "backtoextendcategory") {
+    // Back to category selection for Extend
+    step('home', $from_id);  // Reset step
+    $category_keyboard = KeyboardCategoryForExtend($from_id, "backuser");
+    Editmessagetext($from_id, $message_id, "📌 دسته بندی سرویس‌های خود را برای تمدید انتخاب کنید:", $category_keyboard);
+} elseif ($datain == 'next_page_extend_cat') {
+    // Pagination for extend category-filtered services
+    $userdate = json_decode($user['Processing_value'], true);
+    $category_remark = $userdate['extend_category'] ?? '';
+
+    if (empty($category_remark)) {
+        // Fallback to all services - redirect to next_page_extends
+        $servers_list = "";
+    } else {
+        $servers = getServersForCategory($category_remark);
+        $servers_list = "'" . implode("','", $servers) . "'";
+    }
+
+    $numpage_stmt = $pdo->prepare("SELECT COUNT(*) FROM invoice WHERE id_user = '$from_id'
+        " . (!empty($servers_list) ? "AND Service_location IN ($servers_list)" : "") . "
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold')");
+    $numpage_stmt->execute();
+    $numpage = $numpage_stmt->fetchColumn();
+
+    $page = $user['pagenumber'];
+    $items_per_page = 20;
+    $sum = $user['pagenumber'] * $items_per_page;
+    $next_page = ($sum >= $numpage) ? 1 : $page + 1;
+    $start_index = ($next_page - 1) * $items_per_page;
+
+    $keyboardlists = ['inline_keyboard' => []];
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id'
+        " . (!empty($servers_list) ? "AND Service_location IN ($servers_list)" : "") . "
+        AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume'
+             OR status = 'sendedwarn' OR status = 'send_on_hold')
+        ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt->execute();
+
+    if ($setting['statusnamecustom'] == 'onnamecustom') {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $data = "";
+            if ($row['note'] != null) $data = " | {$row['note']}";
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . $data . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+        }
+    } else {
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $keyboardlists['inline_keyboard'][] = [['text' => "✨" . $row['username'] . "✨", 'callback_data' => "extend_" . $row['id_invoice']]];
+        }
+    }
+
+    $pagination_buttons = [
+        ['text' => $textbotlang['users']['page']['next'], 'callback_data' => 'next_page_extend_cat']
+    ];
+    $keyboardlists['inline_keyboard'][] = $pagination_buttons;
+    $keyboardlists['inline_keyboard'][] = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtoextendcategory']];
+
+    $keyboard_json = json_encode($keyboardlists);
+    update("user", "pagenumber", $next_page, "id", $from_id);
+    $title = !empty($category_remark) ? "📋 سرویس‌های شما در دسته «{$category_remark}» برای تمدید:" : $textbotlang['users']['extend']['selectOrderDirect'];
+    Editmessagetext($from_id, $message_id, $title, $keyboard_json);
 } elseif ($datain == 'next_page') {
     $numpage = select("invoice", "id_user", "id_user", $from_id, "count");
     $page = $user['pagenumber'];
@@ -604,7 +989,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -667,7 +1052,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
-    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
     $stmt->execute();
     if ($setting['statusnamecustom'] == 'onnamecustom') {
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -775,17 +1160,28 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         'Unknown' => $textbotlang['users']['stateus']['Unknown']
     ][$status];
     #--------------[ expire ]---------------#
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs ? jdate('Y/m/d', $expireTs) : $textbotlang['users']['stateus']['Unlimited'];
     #-------------[ data_limit ]----------------#
     $LastTraffic = $DataUserOut['data_limit'] ? formatBytes($DataUserOut['data_limit']) : $textbotlang['users']['stateus']['Unlimited'];
     #---------------[ RemainingVolume ]--------------#
     $output = $DataUserOut['data_limit'] - $DataUserOut['used_traffic'];
     $RemainingVolume = $DataUserOut['data_limit'] ? formatBytes($output) : "نامحدود";
     #---------------[ used_traffic ]--------------#
-    $usedTrafficGb = $DataUserOut['used_traffic'] ? formatBytes($DataUserOut['used_traffic']) : $textbotlang['users']['stateus']['Notconsumed'];
+    if (!$DataUserOut['data_limit']) {
+        // Unlimited traffic
+        $usedTrafficGb = "نامحدود";
+    } elseif ($DataUserOut['used_traffic']) {
+        $usedTrafficGb = formatBytes($DataUserOut['used_traffic']);
+    } else {
+        $usedTrafficGb = $textbotlang['users']['stateus']['Notconsumed'];
+    }
     #--------------[ day ]---------------#
-    $timeDiff = $DataUserOut['expire'] - time();
-    $day = $DataUserOut['expire'] ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : $textbotlang['users']['stateus']['Unlimited'];
+    $timeDiff = $expireTs ? ($expireTs - time()) : 0;
+    $day = $expireTs ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : "";
     #-----------------------------#
 
 
@@ -835,7 +1231,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['info'], $keyboardinfo);
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'html');
     step('home', $from_id);
-} elseif (preg_match('/^product_(\w+)/', $datain, $dataget) || preg_match('/updateproduct_(\w+)/', $datain, $dataget) || $user['step'] == "getuseragnetservice" || $datain == "productcheckdata") {
+} elseif (preg_match('/^product_(\w+)/', $datain, $dataget) || preg_match('/updateproduct_(\w+)/', $datain, $dataget) || $user['step'] == "getuseragnetservice" || $user['step'] == "searchservicecat" || $datain == "productcheckdata") {
     if ($user['step'] == "getuseragnetservice") {
         $username = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
         $sql = "SELECT * FROM invoice WHERE (username LIKE CONCAT('%', :username, '%') OR note  LIKE CONCAT('%', :notes, '%') OR Volume LIKE CONCAT('%',:Volume, '%') OR Service_time LIKE CONCAT('%',:Service_time, '%')) AND id_user = :id_user AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold')";
@@ -843,6 +1239,29 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         $stmt->bindParam(':username', $username, PDO::PARAM_STR);
         $stmt->bindParam(':Service_time', $username, PDO::PARAM_STR);
         $stmt->bindParam(':Volume', $username, PDO::PARAM_STR);
+        $stmt->bindParam(':notes', $username, PDO::PARAM_STR);
+        $stmt->bindParam(':id_user', $from_id);
+        $stmt->execute();
+    } elseif ($user['step'] == "searchservicecat") {
+        // Category-filtered search
+        $username = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+        $userdate = json_decode($user['Processing_value'], true);
+        $category_remark = $userdate['myservices_category'] ?? '';
+
+        if (!empty($category_remark)) {
+            $servers = getServersForCategory($category_remark);
+            $servers_list = "'" . implode("','", $servers) . "'";
+            $sql = "SELECT * FROM invoice WHERE (username LIKE CONCAT('%', :username, '%') OR note LIKE CONCAT('%', :notes, '%'))
+                AND id_user = :id_user
+                AND Service_location IN ($servers_list)
+                AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold')";
+        } else {
+            $sql = "SELECT * FROM invoice WHERE (username LIKE CONCAT('%', :username, '%') OR note LIKE CONCAT('%', :notes, '%'))
+                AND id_user = :id_user
+                AND (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold')";
+        }
+        $stmt = $pdo->prepare($sql);
+        $stmt->bindParam(':username', $username, PDO::PARAM_STR);
         $stmt->bindParam(':notes', $username, PDO::PARAM_STR);
         $stmt->bindParam(':id_user', $from_id);
         $stmt->execute();
@@ -874,7 +1293,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         $stmt->bindParam(':id_user', $from_id);
         $stmt->execute();
     }
-    if ($user['step'] == "getuseragnetservice" && $stmt->rowCount() > 1) {
+    if (($user['step'] == "getuseragnetservice" || $user['step'] == "searchservicecat") && $stmt->rowCount() > 1) {
         $countservice = $stmt->rowCount();
         $pages = 1;
         update("user", "pagenumber", $pages, "id", $from_id);
@@ -906,12 +1325,12 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
                 ];
             }
         }
-        $backuser = [
-            [
-                'text' => "🔙 بازگشت به منوی اصلی",
-                'callback_data' => 'backuser'
-            ]
-        ];
+        // Set back button based on search context
+        if ($user['step'] == "searchservicecat") {
+            $backuser = [['text' => "🔙 بازگشت به دسته بندی‌ها", 'callback_data' => 'backtomyservicescategory']];
+        } else {
+            $backuser = [['text' => "🔙 بازگشت به منوی اصلی", 'callback_data' => 'backuser']];
+        }
         if ($setting['NotUser'] == "onnotuser") {
             $keyboardlists['inline_keyboard'][] = [['text' => $textbotlang['users']['page']['notusernameme'], 'callback_data' => 'notusernameme']];
         }
@@ -923,7 +1342,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
     }
     $nameloc = $stmt->fetch(PDO::FETCH_ASSOC);
     $username = $nameloc['id_invoice'];
-    if (!in_array($nameloc['Status'], ['active', 'end_of_time', 'end_of_volume', 'sendedwarn', 'send_on_hold'])) {
+    if (!in_array($nameloc['Status'], ['active', 'end_of_time', 'end_of_volume', 'sendedwarn', 'send_on_hold', 'disablebyadmin'])) {
         sendmessage($from_id, "❌ امکان مشاهده اطلاعات اکانت درحال حاضر وجود ندارد", $keyboard, 'html');
         step('home', $from_id);
         return;
@@ -944,12 +1363,20 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         step('home', $from_id);
         return;
     }
-    if ($DataUserOut['online_at'] == "online") {
+    if ($DataUserOut['online_at'] == "online" || (isset($DataUserOut['is_online']) && $DataUserOut['is_online'])) {
         $lastonline = 'آنلاین';
+        // Show online count for SSH panels
+        if (isset($DataUserOut['online_count']) && $DataUserOut['online_count'] > 0) {
+            $lastonline .= " ({$DataUserOut['online_count']} اتصال)";
+        }
     } elseif ($DataUserOut['online_at'] == "offline") {
         $lastonline = 'آفلاین';
     } else {
-        if (isset($DataUserOut['online_at']) && $DataUserOut['online_at'] !== null) {
+        if (isset($DataUserOut['online_at']) && $DataUserOut['online_at'] !== null && is_numeric($DataUserOut['online_at'])) {
+            // Timestamp format
+            $lastonline = jdate('Y/m/d H:i:s', $DataUserOut['online_at']);
+        } elseif (isset($DataUserOut['online_at']) && $DataUserOut['online_at'] !== null) {
+            // DateTime string format
             $dateTime = new DateTime($DataUserOut['online_at'], new DateTimeZone('UTC'));
             $dateTime->setTimezone(new DateTimeZone('Asia/Tehran'));
             $lastonline = jdate('Y/m/d H:i:s', $dateTime->getTimestamp());
@@ -969,17 +1396,30 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         'deactivev' => $textbotlang['users']['stateus']['disabled'],
     ][$status];
     #--------------[ expire ]---------------#
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs ? jdate('Y/m/d', $expireTs) : $textbotlang['users']['stateus']['Unlimited'];
     #-------------[ data_limit ]----------------#
     $LastTraffic = $DataUserOut['data_limit'] ? formatBytes($DataUserOut['data_limit']) : $textbotlang['users']['stateus']['Unlimited'];
     #---------------[ RemainingVolume ]--------------#
     $output = $DataUserOut['data_limit'] - $DataUserOut['used_traffic'];
     $RemainingVolume = $DataUserOut['data_limit'] ? formatBytes($output) : "نامحدود";
     #---------------[ used_traffic ]--------------#
-    $usedTrafficGb = $DataUserOut['used_traffic'] ? formatBytes($DataUserOut['used_traffic']) : $textbotlang['users']['stateus']['Notconsumed'];
+    if (!$DataUserOut['data_limit']) {
+        // Unlimited traffic
+        $usedTrafficGb = "نامحدود";
+    } elseif ($DataUserOut['used_traffic']) {
+        $usedTrafficGb = formatBytes($DataUserOut['used_traffic']);
+    } else {
+        $usedTrafficGb = $textbotlang['users']['stateus']['Notconsumed'];
+    }
     #--------------[ day ]---------------#
-    $timeDiff = $DataUserOut['expire'] - time();
-    if ($timeDiff < 0) {
+    $timeDiff = $expireTs ? ($expireTs - time()) : 0;
+    if (!$expireTs) {
+        $day = "";
+    } elseif ($timeDiff < 0) {
         $day = 0;
     } else {
         $day = "";
@@ -1004,7 +1444,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
         if ($timeminuts > 0) {
             $day .= $timeminuts . $textbotlang['users']['stateus']['min'];
         }
-        $day .= " دیگر";
+        $day = "(" . $day . " دیگر)";
     }
     #--------------[ subsupdate ]---------------#
     if ($DataUserOut['sub_updated_at'] !== null) {
@@ -1029,7 +1469,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
             ]
         ]
     ]);
-    if ($marzban['type'] == "ibsng" || $marzban['type'] == "mikrotik") {
+    if ($marzban['type'] == "ibsng" || $marzban['type'] == "mikrotik" || in_array($marzban['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
         $userpassword = "🔑 رمز عبور سرویس شما : <code>{$DataUserOut['subscription_url']}</code>";
     } else {
         $userpassword = "";
@@ -1042,7 +1482,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
 
 📌 اطلاعات سرویس : 
 {$userinfo['contentrecord']}";
-        if ($user['step'] == "getuseragnetservice") {
+        if ($user['step'] == "getuseragnetservice" || $user['step'] == "searchservicecat") {
             sendmessage($from_id, $textinfo, $keyboardsetting, 'html');
         } elseif ($datain == "productcheckdata") {
             deletemessage($from_id, $message_id);
@@ -1091,7 +1531,7 @@ if ($text == "/start" || $datain == "start" || $text == "start") {
 📥 حجم مصرفی : $usedTrafficGb
 💢 حجم باقی مانده : $RemainingVolume ($Percent%)
 
-📅 تاریخ اتمام :  $expirationDate ($day)
+📅 تاریخ اتمام :  $expirationDate $day
 
 $nameconfig";
 
@@ -1122,11 +1562,6 @@ $nameconfig";
         $keyboardsetting = json_encode($keyboardsetting);
     } else {
         $marzbancount = select("marzban_panel", "*", "status", "active", "count");
-        if ($DataUserOut['status'] == "active") {
-            $namestatus = '❌ خاموش کردن اکانت';
-        } else {
-            $namestatus = '💡 روشن کردن اکانت';
-        }
         $keyboarddate = array(
             'updateinfo' => array(
                 'text' => "♻️ بروزرسانی اطلاعات",
@@ -1165,7 +1600,11 @@ $nameconfig";
                 'callback_data' => "Extra_time_"
             ),
             'changestatus' => array(
-                'text' => $namestatus,
+                'text' => '❌ خاموش کردن اکانت',
+                'callback_data' => "changestatus_"
+            ),
+            'enablestatus' => array(
+                'text' => '✅ روشن کردن اکانت',
                 'callback_data' => "changestatus_"
             ),
             'transfor' => array(
@@ -1181,6 +1620,13 @@ $nameconfig";
                 'callback_data' => "disorder-"
             )
         );
+        $ssh_types = ['shahan', 'xpanel', 'rocket_ssh', 'dragon'];
+        if (in_array($marzban['type'], $ssh_types)) {
+            $keyboarddate['sshchangepass'] = array(
+                'text' => '🔑 تغییر رمز عبور',
+                'callback_data' => "sshchangepass_"
+            );
+        }
         if ($nameloc['name_product'] == "سرویس تست") {
             unset($keyboarddate['transfor']);
             unset($keyboarddate['Extra_time']);
@@ -1191,10 +1637,21 @@ $nameconfig";
             unset($keyboarddate['config']);
             unset($keyboarddate['extend']);
             unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
             unset($keyboarddate['change-location']);
             unset($keyboarddate['changelink']);
             unset($keyboarddate['Extra_volume']);
             unset($keyboarddate['Extra_time']);
+        }
+        if (in_array($marzban['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            unset($keyboarddate['linksub']);
+            unset($keyboarddate['config']);
+            unset($keyboarddate['changelink']);
+            unset($keyboarddate['change-location']);
+            unset($keyboarddate['Extra_volume']);
+            unset($keyboarddate['Extra_time']);
+            unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
         }
         if ($marzban['type'] == "eylanpanel") {
             unset($keyboarddate['config']);
@@ -1203,6 +1660,7 @@ $nameconfig";
         if ($marzban['type'] == "WGDashboard") {
             unset($keyboarddate['config']);
             unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
             unset($keyboarddate['change-location']);
             unset($keyboarddate['changelink']);
         }
@@ -1218,6 +1676,7 @@ $nameconfig";
         if ($marzban['type'] == "hiddify") {
             unset($keyboarddate['changelink']);
             unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
             unset($keyboarddate['config']);
         }
         if ($statusdisorder == "offdisorder")
@@ -1228,8 +1687,22 @@ $nameconfig";
             unset($keyboarddate['Extra_volume']);
             unset($keyboarddate['Extra_time']);
         }
-        if ($statuschangeservice == "offstatus")
+        if ($statuschangeservice == "offstatus") {
             unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
+        }
+        // Show only appropriate button based on account status
+        if ($DataUserOut['status'] == "active" || $DataUserOut['status'] == "on_hold") {
+            // Active/on_hold: show disable button, hide enable button
+            unset($keyboarddate['enablestatus']);
+        } elseif ($DataUserOut['status'] == "expired" || $DataUserOut['status'] == "limited") {
+            // Expired/limited: hide both buttons
+            unset($keyboarddate['changestatus']);
+            unset($keyboarddate['enablestatus']);
+        } else {
+            // Disabled/deactivev/Unknown: show enable button, hide disable button
+            unset($keyboarddate['changestatus']);
+        }
         if ($setting['statusnamecustom'] == 'offnamecustom')
             unset($keyboarddate['changenameconfig']);
         if ($marzbancount == 1)
@@ -1264,6 +1737,38 @@ $nameconfig";
         } else {
             $textconnect = "📶 اخرین زمان اتصال شما : $lastonline";
         }
+        // Build SSH details if SSH panel
+        $ssh_details = "";
+        $ssh_types_info = ['shahan', 'xpanel', 'rocket_ssh', 'dragon'];
+        if (in_array($marzban['type'], $ssh_types_info)) {
+            $ssh_host = !empty($marzban['linksubx']) ? $marzban['linksubx'] : $marzban['url_panel'];
+            $ssh_host = preg_replace('#https?://#', '', $ssh_host);
+            $ssh_host = explode(':', $ssh_host)[0];
+            $ssh_host = rtrim($ssh_host, '/');
+            // Use parse_ssh_ports to get live ports from Rocket API
+            $ssh_ports = parse_ssh_ports($marzban);
+            $ssh_port = $ssh_ports['ssh_port'] ?? '22';
+            $udgpw = $ssh_ports['udgpw'] ?? '0';
+            $ssh_password = $DataUserOut['subscription_url'] ?? '';
+            $conn_limit = $DataUserOut['connection_limit'] ?? '';
+
+            $ssh_details = "\n🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port SSH : <code>{$ssh_port}</code>";
+            if ($udgpw && $udgpw !== '0') {
+                $ssh_details .= "\n🔌 Port UDP : <code>{$udgpw}</code>";
+            }
+            $ssh_details .= "\n👤 Username : <code>{$DataUserOut['username']}</code>";
+            if ($ssh_password) {
+                $ssh_details .= "\n🔑 Password : <code>{$ssh_password}</code>";
+            }
+            if ($conn_limit) {
+                $ssh_details .= "\n👥 تعداد کاربر : {$conn_limit}";
+            }
+            // Add NPVT link
+            $npvt_link = generate_npvt_link($DataUserOut['username'], $ssh_password, $ssh_host, $ssh_port, $udgpw ?: 7300);
+            $ssh_details .= "\n\n🔗 NPVT Link:\n<code>{$npvt_link}</code>";
+        }
+
         $textinfo = "📊وضعیت سرویس : $status_var
 👤 نام سرویس : <code>{$DataUserOut['username']}</code>
 $userpassword
@@ -1275,13 +1780,13 @@ $nameconfig
 📥 حجم مصرفی : $usedTrafficGb
 💢 حجم باقی مانده : $RemainingVolume ($Percent%)
 
-📅 تاریخ اتمام : $expirationDate ($day)
+📅 تاریخ اتمام : $expirationDate $day
 
 $textconnect
-
+$ssh_details
 💡 برای قطع دسترسی دیگران کافیست روی گزینه \"تغییر لینک\" کلیک کنید.";
     }
-    if ($user['step'] == "getuseragnetservice") {
+    if ($user['step'] == "getuseragnetservice" || $user['step'] == "searchservicecat") {
         sendmessage($from_id, $textinfo, $keyboardsetting, 'html');
     } elseif ($datain == "productcheckdata") {
         deletemessage($from_id, $message_id);
@@ -1460,17 +1965,14 @@ $textconnect
     }
     $id_invoice = $dataget[1];
     $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
-    if ($nameloc['Status'] == "disablebyadmin") {
-        sendmessage($from_id, "❌ این قابلیت درحال حاضر در دسترس نیست", null, 'html');
-        return;
-    }
     $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
-    if ($DataUserOut['status'] == "on_hold") {
-        sendmessage($from_id, "❌ هنوز به کانفیگ متصل نشده اید و امکان تغییر وضعیت سرویس وجود ندارد. بعد از متصل شدن به کانفیگ می توانید از این قابلیت استفاده نمایید.", null, 'html');
-        return;
-    }
     if ($DataUserOut['status'] == "Unsuccessful") {
         sendmessage($from_id, $textbotlang['users']['stateus']['error'], null, 'html');
+        return;
+    }
+    // Check if expired/limited - don't allow enabling
+    if ($DataUserOut['status'] == "expired" || $DataUserOut['status'] == "limited") {
+        sendmessage($from_id, "❌ سرویس شما منقضی شده است. برای استفاده مجدد باید سرویس را تمدید کنید.", null, 'html');
         return;
     }
     if ($DataUserOut['status'] == "active") {
@@ -1485,7 +1987,7 @@ $textconnect
             ]
         ]);
         Editmessagetext($from_id, $message_id, "📌 با تایید گزینه زیر کانفیگ شما خاموش و دیگر امکان اتصال به کانفیگ وجود ندارد.
-⚠️ در صورتی که میخواهید مجدد کانفیگ فعال شود باید از بخش مدیریت سرویس دکمه <u>💡 روشن کردن اکانت</u> را کلیک کنید", $confirmdisableaccount);
+⚠️ در صورتی که میخواهید مجدد کانفیگ فعال شود باید از بخش مدیریت سرویس دکمه <u>✅ روشن کردن اکانت</u> را کلیک کنید", $confirmdisableaccount);
     } else {
         $confirmdisableaccount = json_encode([
             'inline_keyboard' => [
@@ -1511,17 +2013,37 @@ $textconnect
             ]
         ]
     ]);
+    $DataUserBefore = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
+    $wasActive = (isset($DataUserBefore['status']) && $DataUserBefore['status'] == "active");
     $dataoutput = $ManagePanel->Change_status($nameloc['username'], $nameloc['Service_location']);
     if ($dataoutput['status'] == "Unsuccessful") {
         Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['notchanged'], $bakinfos);
         return;
     }
-    $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
-    if ($DataUserOut['status'] == "active") {
-        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['activedconfig'], $bakinfos);
-    } else {
+    if ($wasActive) {
+        update("invoice", "Status", "disablebyadmin", "id_invoice", $id_invoice);
         Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['disabledconfig'], $bakinfos);
+    } else {
+        update("invoice", "Status", "active", "id_invoice", $id_invoice);
+        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['activedconfig'], $bakinfos);
     }
+} elseif (preg_match('/sshchangepass_(\w+)/', $datain, $dataget)) {
+    $id_invoice = $dataget[1];
+    $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    if ($nameloc == false) {
+        sendmessage($from_id, "❌ سرویس یافت نشد", null, 'HTML');
+        return;
+    }
+    $bakinfos = json_encode([
+        'inline_keyboard' => [
+            [
+                ['text' => $textbotlang['users']['stateus']['backinfo'], 'callback_data' => "product_" . $id_invoice],
+            ]
+        ]
+    ]);
+    Editmessagetext($from_id, $message_id, "🔑 لطفا رمز عبور جدید را وارد کنید:\n\n⚠️ رمز عبور باید بین 4 تا 16 کاراکتر باشد و شامل حروف انگلیسی، اعداد و کاراکترهای خاص باشد.", $bakinfos);
+    update("user", "Processing_value_four", "sshchangepass_" . $id_invoice, "id", $from_id);
+    step('sshchangepass', $from_id);
 } elseif (preg_match('/extend_(\w+)/', $datain, $dataget)) {
     $id_invoice = $dataget[1];
     $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
@@ -2541,9 +3063,13 @@ $textconnect
         'username' => $username,
         'type' => 'usertest'
     );
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
-    $timeDiff = $DataUserOut['expire'] - time();
-    $day = $DataUserOut['expire'] ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs3 = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs3 && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs3 = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs3 ? jdate('Y/m/d', $expireTs3) : $textbotlang['users']['stateus']['Unlimited'];
+    $timeDiff = $expireTs3 ? ($expireTs3 - time()) : 0;
+    $day = $expireTs3 ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : "";
     $output = $DataUserOut['data_limit'] - $DataUserOut['used_traffic'];
     $RemainingVolume = $DataUserOut['data_limit'] ? formatBytes($output) : "نامحدود";
     if ($marzban_list_get['url_panel'] == $marzban_list_get_new['url_panel']) {
@@ -2590,7 +3116,7 @@ $textconnect
 
 🖥 نام سرویس : {$nameloc['username']}
 💠 حجم سرویس : $RemainingVolume
-⏳ زمان انقضا :  $expirationDate | $day 
+⏳ زمان انقضا :  $expirationDate $day
 
 
 🔗 لینک اشتراک شما: 
@@ -2713,17 +3239,28 @@ $textconnect
         'deactivev' => $textbotlang['users']['stateus']['disabled'],
     ][$status];
     #--------------[ expire ]---------------#
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs ? jdate('Y/m/d', $expireTs) : $textbotlang['users']['stateus']['Unlimited'];
     #-------------[ data_limit ]----------------#
     $LastTraffic = $DataUserOut['data_limit'] ? formatBytes($DataUserOut['data_limit']) : $textbotlang['users']['stateus']['Unlimited'];
     #---------------[ RemainingVolume ]--------------#
     $output = $DataUserOut['data_limit'] - $DataUserOut['used_traffic'];
     $RemainingVolume = $DataUserOut['data_limit'] ? formatBytes($output) : "نامحدود";
     #---------------[ used_traffic ]--------------#
-    $usedTrafficGb = $DataUserOut['used_traffic'] ? formatBytes($DataUserOut['used_traffic']) : $textbotlang['users']['stateus']['Notconsumed'];
+    if (!$DataUserOut['data_limit']) {
+        // Unlimited traffic
+        $usedTrafficGb = "نامحدود";
+    } elseif ($DataUserOut['used_traffic']) {
+        $usedTrafficGb = formatBytes($DataUserOut['used_traffic']);
+    } else {
+        $usedTrafficGb = $textbotlang['users']['stateus']['Notconsumed'];
+    }
     #--------------[ day ]---------------#
-    $timeDiff = $DataUserOut['expire'] - time();
-    $day = $DataUserOut['expire'] ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : $textbotlang['users']['stateus']['Unlimited'];
+    $timeDiff = $expireTs ? ($expireTs - time()) : 0;
+    $day = $expireTs ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : "";
     #--------------[ subsupdate ]---------------#
     if ($DataUserOut['sub_updated_at'] !== null) {
         $sub_updated = $DataUserOut['sub_updated_at'];
@@ -2747,7 +3284,7 @@ $textconnect
 📥 حجم مصرفی : $usedTrafficGb
 💢 حجم باقی مانده : $RemainingVolume ($Percent%)
 
-📅 فعال تا تاریخ : $expirationDate ($day)
+📅 فعال تا تاریخ : $expirationDate $day
 
 لینک اشتراک کاربر : 
 <code>{$DataUserOut['subscription_url']}</code>
@@ -2898,7 +3435,8 @@ $textconnect
         'old_volume' => $DataUserOut['data_limit'],
         'expire_old' => $DataUserOut['expire']
     ));
-    $timeservice = $DataUserOut['expire'] - time();
+    $expireTsET = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    $timeservice = $expireTsET ? ($expireTsET - time()) : 0;
     $day = floor($timeservice / 86400);
     $extra_time = $ManagePanel->extra_time($nameloc['username'], $marzban_list_get['code_panel'], $extratimeday);
     if ($extra_time['status'] == false) {
@@ -2993,6 +3531,12 @@ $textconnect
     }
     $marzban_list_get = select("marzban_panel", "*", "name_panel", $nameloc['Service_location'], "select");
     $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
+    // Check for panel connection error
+    if ($DataUserOut['status'] == "Unsuccessful") {
+        sendmessage($from_id, $textbotlang['users']['stateus']['panelNotConnected'], null, 'html');
+        step("home", $from_id);
+        return;
+    }
     if (isset($DataUserOut['status']) && in_array($DataUserOut['status'], ["expired", "limited", "disabled"])) {
         sendmessage($from_id, $textbotlang['users']['stateus']['error'], null, 'html');
         step("home", $from_id);
@@ -3044,20 +3588,26 @@ $textconnect
         return;
     }
     #-------------status----------------#
-    if ($DataUserOut['online_at'] == "online") {
+    if ($DataUserOut['online_at'] == "online" || (isset($DataUserOut['is_online']) && $DataUserOut['is_online'])) {
         $lastonline = 'آنلاین';
+        if (isset($DataUserOut['online_count']) && $DataUserOut['online_count'] > 0) {
+            $lastonline .= " ({$DataUserOut['online_count']} اتصال)";
+        }
     } elseif ($DataUserOut['online_at'] == "offline") {
         $lastonline = 'آفلاین';
     } else {
         if (isset($DataUserOut['online_at']) && $DataUserOut['online_at'] !== null) {
-            $dateString = $DataUserOut['online_at'];
-            $lastonline = jdate('Y/m/d H:i:s', strtotime($dateString));
+            if (is_numeric($DataUserOut['online_at'])) {
+                $lastonline = jdate('Y/m/d H:i:s', $DataUserOut['online_at']);
+            } else {
+                $lastonline = jdate('Y/m/d H:i:s', strtotime($DataUserOut['online_at']));
+            }
         } else {
             $lastonline = "متصل نشده";
         }
     }
-    $status = $DataUserOut['status'];
-    $status_var = [
+    $status = $DataUserOut['status'] ?? 'active';
+    $status_map = [
         'active' => $textbotlang['users']['stateus']['active'],
         'limited' => $textbotlang['users']['stateus']['limited'],
         'disabled' => $textbotlang['users']['stateus']['disabled'],
@@ -3065,20 +3615,31 @@ $textconnect
         'on_hold' => $textbotlang['users']['stateus']['on_hold'],
         'Unknown' => $textbotlang['users']['stateus']['Unknown'],
         'deactivev' => $textbotlang['users']['stateus']['disabled'],
-
-    ][$status];
+    ];
+    $status_var = $status_map[$status] ?? $textbotlang['users']['stateus']['active'];
     #--------------[ expire ]---------------#
-    $expirationDate = $DataUserOut['expire'] ? jdate('Y/m/d', $DataUserOut['expire']) : $textbotlang['users']['stateus']['Unlimited'];
+    $expireTs = (isset($DataUserOut['expire']) && is_numeric($DataUserOut['expire']) && intval($DataUserOut['expire']) > 0) ? intval($DataUserOut['expire']) : 0;
+    if (!$expireTs && isset($DataUserOut['days_left']) && is_numeric($DataUserOut['days_left']) && intval($DataUserOut['days_left']) > 0 && intval($DataUserOut['days_left']) < 9999) {
+        $expireTs = time() + (intval($DataUserOut['days_left']) * 86400);
+    }
+    $expirationDate = $expireTs ? jdate('Y/m/d', $expireTs) : $textbotlang['users']['stateus']['Unlimited'];
     #-------------[ data_limit ]----------------#
     $LastTraffic = $DataUserOut['data_limit'] ? formatBytes($DataUserOut['data_limit']) : $textbotlang['users']['stateus']['Unlimited'];
     #---------------[ RemainingVolume ]--------------#
     $output = $DataUserOut['data_limit'] - $DataUserOut['used_traffic'];
     $RemainingVolume = $DataUserOut['data_limit'] ? formatBytes($output) : "نامحدود";
     #---------------[ used_traffic ]--------------#
-    $usedTrafficGb = $DataUserOut['used_traffic'] ? formatBytes($DataUserOut['used_traffic']) : $textbotlang['users']['stateus']['Notconsumed'];
+    if (!$DataUserOut['data_limit']) {
+        // Unlimited traffic
+        $usedTrafficGb = "نامحدود";
+    } elseif ($DataUserOut['used_traffic']) {
+        $usedTrafficGb = formatBytes($DataUserOut['used_traffic']);
+    } else {
+        $usedTrafficGb = $textbotlang['users']['stateus']['Notconsumed'];
+    }
     #--------------[ day ]---------------#
-    $timeDiff = $DataUserOut['expire'] - time();
-    $day = $DataUserOut['expire'] ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : $textbotlang['users']['stateus']['Unlimited'];
+    $timeDiff = $expireTs ? ($expireTs - time()) : 0;
+    $day = $expireTs ? floor($timeDiff / 86400) . $textbotlang['users']['stateus']['day'] : "";
     #-----------------------------#
     $textinfoadmin = "سلام ادمین 👋
         
@@ -3098,7 +3659,7 @@ $textconnect
 📥 حجم مصرفی : $usedTrafficGb
 ♾ حجم سرویس : $LastTraffic
 🪫 حجم باقی مانده : $RemainingVolume
-📅 فعال تا تاریخ : $expirationDate ($day)
+📅 فعال تا تاریخ : $expirationDate $day
 
 
 <b>❌ ادمین گرامی توجه داشته باشید دکمه حذف سرویس که میزنید ربات خودکار حساب میکند و احتمال اشتباه وجود دارد پیشنهاد می شود از  حذف دستی  استفاده نمایید</b>
@@ -3350,6 +3911,28 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
             ]
         ]
     ]);
+    if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_ports = parse_ssh_ports($marzban_list_get);
+        $ssh_host = get_ssh_display_host($marzban_list_get);
+        $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+        $textcreatuser = "✅ سرویس تست با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+⏳ Days : {$marzban_list_get['time_usertest']}
+🗜 Traffic : {$marzban_list_get['val_usertest']} GB
+
+🌿 نام سرویس : تست
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    } else {
     if ($marzban_list_get['type'] == "WGDashboard") {
         $datatextbot['textaftertext'] = "✅ سرویس با موفقیت ایجاد شد
 
@@ -3373,6 +3956,7 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
     if ($marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "mikrotik") {
         $textcreatuser = str_replace('{password}', $dataoutput['subscription_url'], $textcreatuser);
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    }
     }
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $usertestinfo, $textcreatuser, $randomString);
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
@@ -3882,11 +4466,80 @@ $textinvite
         savedata('clear', "nameconfig", $text);
         step("home", $from_id);
     }
-    if ($datain == "buy" || $datain == "buybacktow" || $datain == "buyback") {
-        Editmessagetext($from_id, $message_id, $datatextbot['textselectlocation'], $list_marzban_panel_user);
+    // Check if category-first mode is enabled
+    if ($setting['statuscategorygenral'] == "oncategorys") {
+        // Show categories first, then servers
+        $backuser_cat = ($statusnote) ? "buyback" : "backuser";
+        $category_keyboard = KeyboardCategoryFirstBuy($user['agent'], $backuser_cat);
+        if ($datain == "buy" || $datain == "buybacktow" || $datain == "buyback") {
+            Editmessagetext($from_id, $message_id, "📌 دسته بندی خود را انتخاب نمایید!", $category_keyboard);
+        } else {
+            sendmessage($from_id, "📌 دسته بندی خود را انتخاب نمایید!", $category_keyboard, 'HTML');
+        }
     } else {
-        sendmessage($from_id, $datatextbot['textselectlocation'], $list_marzban_panel_user, 'HTML');
+        // Normal flow: show servers first
+        if ($datain == "buy" || $datain == "buybacktow" || $datain == "buyback") {
+            Editmessagetext($from_id, $message_id, $datatextbot['textselectlocation'], $list_marzban_panel_user);
+        } else {
+            sendmessage($from_id, $datatextbot['textselectlocation'], $list_marzban_panel_user, 'HTML');
+        }
     }
+} elseif (preg_match('/^categoryfirst_(.*)/', $datain, $dataget)) {
+    // User selected a category first - now show servers for this category
+    $category_id = $dataget[1];
+    $category_data = select("category", "*", "id", $category_id, "select");
+    $category_remark = $category_data['remark'];
+
+    // Save category to user processing data
+    savedata('clear', "category_selected", $category_remark);
+
+    $backuser_cat = ($statusnote) ? "buyback" : "backuser";
+    $servers_keyboard = KeyboardServersForCategory($category_remark, $user['agent'], "backtocategory");
+    Editmessagetext($from_id, $message_id, $datatextbot['textselectlocation'] ?: "📌 سرور خود را انتخاب کنید:", $servers_keyboard);
+} elseif ($datain == "backtocategory") {
+    // Back to category selection
+    $backuser_cat = ($statusnote) ? "buyback" : "backuser";
+    $category_keyboard = KeyboardCategoryFirstBuy($user['agent'], $backuser_cat);
+    Editmessagetext($from_id, $message_id, "📌 دسته بندی خود را انتخاب نمایید!", $category_keyboard);
+} elseif (preg_match('/^locationcat_(.*)/', $datain, $dataget)) {
+    // User selected server after category - process with saved category
+    $userdate = json_decode($user['Processing_value'], true);
+    $category_remark = $userdate['category_selected'] ?? null;
+    $location = select("marzban_panel", "*", "code_panel", $dataget[1], "select")['name_panel'];
+    $marzban_list_get = select("marzban_panel", "*", "name_panel", $location, "select");
+
+    // Check panel limit
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = '{$marzban_list_get['name_panel']}'");
+    $stmt->execute();
+    $countinovoice = $stmt->rowCount();
+    if ($marzban_list_get['limit_panel'] != "unlimited" && $countinovoice >= $marzban_list_get['limit_panel']) {
+        sendmessage($from_id, $textbotlang['Admin']['managepanel']['limitedpanel'], null, 'HTML');
+        return;
+    }
+
+    savedata('save', "name_panel", $location);
+
+    // Query products for this server AND category
+    if ($category_remark) {
+        $query = "SELECT * FROM product WHERE (Location = '$location' OR Location = '/all') AND agent = '{$user['agent']}' AND category = '$category_remark'";
+    } else {
+        $query = "SELECT * FROM product WHERE (Location = '$location' OR Location = '/all') AND agent = '{$user['agent']}'";
+    }
+
+    $statuscustomvolume = json_decode($marzban_list_get['customvolume'], true)[$user['agent']];
+    if ($marzban_list_get['MethodUsername'] == $textbotlang['users']['customusername'] || $marzban_list_get['MethodUsername'] == "نام کاربری دلخواه + عدد رندوم") {
+        $datakeyboard = "prodcutservices_";
+    } else {
+        $datakeyboard = "prodcutservice_";
+    }
+    if ($statuscustomvolume == "1" && $marzban_list_get['type'] != "Manualsale") {
+        $statuscustom = true;
+    } else {
+        $statuscustom = false;
+    }
+
+    $back = "categoryfirst_" . (select("category", "id", "remark", $category_remark, "select")['id'] ?? "0");
+    Editmessagetext($from_id, $message_id, $textbotlang['users']['sell']['Service-select-first'], KeyboardProduct($marzban_list_get['name_panel'], $query, $user['pricediscount'], $datakeyboard, $statuscustom, $back));
 } elseif (preg_match('/^location_(.*)/', $datain, $dataget) || $datain == "backproduct") {
     $userdate = json_decode($user['Processing_value'], true);
     if ($datain != "backproduct") {
@@ -4384,6 +5037,37 @@ $textinvite
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "Manualsale" ? $datatextbot['textmanual'] : $datatextbot['textafterpay'];
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "WGDashboard" ? $datatextbot['text_wgdashboard'] : $datatextbot['textafterpay'];
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "mikrotik" ? $datatextbot['textafterpayibsng'] : $datatextbot['textafterpay'];
+    if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_ports = parse_ssh_ports($marzban_list_get);
+        $ssh_host = get_ssh_display_host($marzban_list_get);
+        $ssh_days_display = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Service_time'];
+        $ssh_volume = (intval($info_product['Volume_constraint']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Volume_constraint'] . ' GB';
+        $ssh_expire_date = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : date('Y/m/d', time() + (intval($info_product['Service_time']) * 86400));
+        $ssh_connection_limit = 1;
+        if (isset($info_product['inbounds']) && is_numeric($info_product['inbounds'])) {
+            $ssh_connection_limit = intval($info_product['inbounds']);
+        }
+        $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+        $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+📶 Connection Limit : {$ssh_connection_limit}
+⏳ Days : {$ssh_days_display}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : {$info_product['name_product']}
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    } else {
     if (intval($info_product['Service_time']) == 0)
         $info_product['Service_time'] = $textbotlang['users']['stateus']['Unlimited'];
     if (intval($info_product['Volume_constraint']) == 0)
@@ -4402,6 +5086,7 @@ $textinvite
     if ($marzban_list_get['type'] == "Manualsale" || $marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "mikrotik") {
         $textcreatuser = str_replace('{password}', $dataoutput['subscription_url'], $textcreatuser);
         update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+    }
     }
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
@@ -4976,6 +5661,31 @@ $textonebuy
             }
         }
         $datatextbot['textafterpay'] = $marzban_list_get['type'] == "Manualsale" ? $datatextbot['textmanual'] : $datatextbot['textafterpay'];
+        if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            $ssh_ports = parse_ssh_ports($marzban_list_get);
+            $ssh_host = get_ssh_display_host($marzban_list_get);
+            $ssh_days_display = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Service_time'];
+            $ssh_volume = (intval($info_product['Volume_constraint']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Volume_constraint'] . ' GB';
+            $ssh_expire_date = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : date('Y/m/d', time() + (intval($info_product['Service_time']) * 86400));
+            $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+            $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+⏳ Days : {$ssh_days_display}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : {$info_product['name_product']}
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        } else {
         if ($marzban_list_get['type'] == "WGDashboard") {
             $datatextbot['textafterpay'] = "✅ سرویس با موفقیت ایجاد شد
 
@@ -4995,6 +5705,7 @@ $textonebuy
         $textcreatuser = str_replace('{config}', "<code>{$output_config_link}</code>", $textcreatuser);
         $textcreatuser = str_replace('{links}', "<code>{$config}</code>", $textcreatuser);
         $textcreatuser = str_replace('{links2}', "{$output_config_link}", $textcreatuser);
+        }
         sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $Shoppinginfo, $textcreatuser, $randomString);
     }
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
@@ -7056,12 +7767,21 @@ $text_porsant
         sendmessage($from_id, $textbotlang['users']['extend']['emptyServiceforExtend'], null, 'html');
         return;
     }
+
+    // Check if category-first mode is enabled - show categories before services
+    if ($setting['statuscategorygenral'] == "oncategorys" && $datain != "extendbtn") {
+        step('home', $from_id);  // Reset step to prevent number input errors
+        $category_keyboard = KeyboardCategoryForExtend($from_id, "backuser");
+        sendmessage($from_id, "📌 دسته بندی سرویس‌های خود را برای تمدید انتخاب کنید:", $category_keyboard, 'html');
+        return;
+    }
+
     $pages = 1;
     update("user", "pagenumber", $pages, "id", $from_id);
     $page = 1;
     $items_per_page = 20;
     $start_index = ($page - 1) * $items_per_page;
-    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
@@ -7118,7 +7838,7 @@ $text_porsant
         $next_page = $page + 1;
     }
     $start_index = ($next_page - 1) * $items_per_page;
-    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
+    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $start_index, $items_per_page");
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
@@ -7176,7 +7896,7 @@ $text_porsant
         $previous_page = $page - 1;
     }
     $start_index = ($previous_page - 1) * $items_per_page;
-    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
+    $result = mysqli_query($connect, "SELECT * FROM invoice WHERE id_user = '$from_id' AND (status = 'active' OR status = 'end_of_time'  OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold' OR status = 'disablebyadmin') ORDER BY time_sell DESC LIMIT $previous_page, $items_per_page");
     $keyboardlists = [
         'inline_keyboard' => [],
     ];
@@ -7277,6 +7997,43 @@ $text_porsant
             'parse_mode' => "HTML"
         ]);
     }
+} elseif ($user['step'] == "sshchangepass") {
+    $proc_val = $user['Processing_value_four'];
+    $id_invoice = str_replace('sshchangepass_', '', $proc_val);
+    $nameloc = select("invoice", "*", "id_invoice", $id_invoice, "select");
+    $bakinfos = json_encode([
+        'inline_keyboard' => [
+            [
+                ['text' => $textbotlang['users']['stateus']['backinfo'], 'callback_data' => "product_" . $id_invoice],
+            ]
+        ]
+    ]);
+    if ($nameloc == false) {
+        sendmessage($from_id, "❌ سرویس یافت نشد", $bakinfos, 'HTML');
+        step("home", $from_id);
+        return;
+    }
+    $newpass = trim($text);
+    if (strlen($newpass) < 4 || strlen($newpass) > 16) {
+        sendmessage($from_id, "❌ رمز عبور باید بین 4 تا 16 کاراکتر باشد.", $bakinfos, 'HTML');
+        return;
+    }
+    if (!preg_match('/^[a-zA-Z0-9@#$%^&*!_\-]+$/', $newpass)) {
+        sendmessage($from_id, "❌ رمز عبور فقط میتواند شامل حروف انگلیسی، اعداد و کاراکترهای خاص باشد.", $bakinfos, 'HTML');
+        return;
+    }
+    $config = array('password' => $newpass);
+    $result = $ManagePanel->Modifyuser($nameloc['username'], $nameloc['Service_location'], $config);
+    if (isset($result['status']) && $result['status'] == true) {
+        sendmessage($from_id, "✅ رمز عبور با موفقیت تغییر یافت.\n\n🔑 رمز جدید: <code>$newpass</code>", $bakinfos, 'HTML');
+    } else {
+        $err = 'خطای نامشخص';
+        if (isset($result['data']['error'])) $err = $result['data']['error'];
+        elseif (isset($result['data']['msg'])) $err = $result['data']['msg'];
+        elseif (isset($result['msg'])) $err = $result['msg'];
+        sendmessage($from_id, "❌ خطا در تغییر رمز عبور: $err", $bakinfos, 'HTML');
+    }
+    step("home", $from_id);
 }
 if (isset($update['pre_checkout_query'])) {
     $userid = $update['pre_checkout_query']['from']['id'];

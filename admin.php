@@ -864,9 +864,34 @@ $paycount
     step('add_password_panel', $from_id);
     savedata("save", "username", $text);
 } elseif ($user['step'] == "add_password_panel") {
+    savedata("save", "password", $text);
+    $userdata = json_decode($user['Processing_value'], true);
+    // SSH panels: ask for SSH port
+    if (in_array($userdata['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        sendmessage($from_id, "🔌 پورت SSH را وارد کنید (پیش‌فرض: 22):", $backadmin, 'HTML');
+        step('get_ssh_port', $from_id);
+        return;
+    }
     sendmessage($from_id, $textbotlang['Admin']['managepanel']['getlimitedpanel'], $backadmin, 'HTML');
     step('getlimitedpanel', $from_id);
-    savedata("save", "password", $text);
+} elseif ($user['step'] == "get_ssh_port") {
+    $ssh_port = trim($text) ?: '22';
+    if (!ctype_digit($ssh_port)) {
+        sendmessage($from_id, "❌ پورت باید عدد باشد", $backadmin, 'HTML');
+        return;
+    }
+    savedata("save", "ssh_port", $ssh_port);
+    sendmessage($from_id, "🔌 پورت UDGPW را وارد کنید (پیش‌فرض: 7300، اگر ندارید 0 بزنید):", $backadmin, 'HTML');
+    step('get_udgpw_port', $from_id);
+} elseif ($user['step'] == "get_udgpw_port") {
+    $udgpw_port = trim($text) ?: '7300';
+    if (!ctype_digit($udgpw_port)) {
+        sendmessage($from_id, "❌ پورت باید عدد باشد", $backadmin, 'HTML');
+        return;
+    }
+    savedata("save", "udgpw_port", $udgpw_port);
+    sendmessage($from_id, $textbotlang['Admin']['managepanel']['getlimitedpanel'], $backadmin, 'HTML');
+    step('getlimitedpanel', $from_id);
 } elseif ($user['step'] == "getlimitedpanel") {
     savedata("save", "limitpanel", $text);
     $userdata = json_decode($user['Processing_value'], true);
@@ -925,7 +950,18 @@ $paycount
     $statusextend = "on_extend";
     $subvip = "offsubvip";
     $stauts_on_holed = "1";
-    $stmt = $pdo->prepare("INSERT INTO marzban_panel (code_panel,name_panel,sublink,config,MethodUsername,TestAccount,status,limit_panel,namecustom,Methodextend,type,conecton,inboundid,agent,inbound_deactive,inboundstatus,url_panel,username_panel,password_panel,time_usertest,val_usertest,linksubx,priceextravolume,priceextratime,pricecustomvolume,pricecustomtime,mainvolume,maxvolume,maintime,maxtime,status_extend,subvip,changeloc,customvolume,on_hold_test,version_panel) VALUES (:code_panel,:name_panel,:sublink,:config,:MethodUsername,:TestAccount,:status,:limit_panel,:namecustom,:Methodextend,:type,:conecton,:inboundid,:agent,:inbound_deactive,:inboundstatus,:url_panel,:username_panel,:password_panel,:val_usertest,:time_usertest,:linksubx,:priceextravolume,:priceextratime,:pricecustomvolume,:pricecustomtime,:mainvolume,:maxvolume,:maintime,:maxtime,:status_extend,:subvip,:changeloc,:customvolume,:on_hold_test,'0')");
+    // SSH panels: create proxies JSON from saved ports
+    $proxies_value = null;
+    if (in_array($userdata['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_port = $userdata['ssh_port'] ?? '22';
+        $udgpw_port = $userdata['udgpw_port'] ?? '7300';
+        $proxies_value = json_encode([
+            'ssh_port' => $ssh_port,
+            'udgpw' => $udgpw_port,
+            'dropbear' => '0'
+        ]);
+    }
+    $stmt = $pdo->prepare("INSERT INTO marzban_panel (code_panel,name_panel,sublink,config,MethodUsername,TestAccount,status,limit_panel,namecustom,Methodextend,type,conecton,inboundid,agent,inbound_deactive,inboundstatus,url_panel,username_panel,password_panel,time_usertest,val_usertest,linksubx,priceextravolume,priceextratime,pricecustomvolume,pricecustomtime,mainvolume,maxvolume,maintime,maxtime,status_extend,subvip,changeloc,customvolume,on_hold_test,version_panel,proxies) VALUES (:code_panel,:name_panel,:sublink,:config,:MethodUsername,:TestAccount,:status,:limit_panel,:namecustom,:Methodextend,:type,:conecton,:inboundid,:agent,:inbound_deactive,:inboundstatus,:url_panel,:username_panel,:password_panel,:val_usertest,:time_usertest,:linksubx,:priceextravolume,:priceextratime,:pricecustomvolume,:pricecustomtime,:mainvolume,:maxvolume,:maintime,:maxtime,:status_extend,:subvip,:changeloc,:customvolume,:on_hold_test,'0',:proxies)");
     $stmt->bindParam(':code_panel', $randomString);
     $stmt->bindParam(':name_panel', $userdata['namepanel'], PDO::PARAM_STR);
     $stmt->bindParam(':sublink', $sublink);
@@ -961,7 +997,22 @@ $paycount
     $stmt->bindParam(':changeloc', $changeloc);
     $stmt->bindParam(':customvolume', $VALUE);
     $stmt->bindParam(':on_hold_test', $stauts_on_holed);
-    $stmt->execute();
+    $stmt->bindParam(':proxies', $proxies_value);
+    try {
+        $result = $stmt->execute();
+        if (!$result) {
+            $error = $stmt->errorInfo();
+            error_log("Panel INSERT failed: " . print_r($error, true));
+            sendmessage($from_id, "❌ خطا در افزودن پنل: " . ($error[2] ?? 'Unknown error'), $keyboardadmin, 'HTML');
+            step("home", $from_id);
+            return;
+        }
+    } catch (PDOException $e) {
+        error_log("Panel INSERT exception: " . $e->getMessage());
+        sendmessage($from_id, "❌ خطا در افزودن پنل: " . $e->getMessage(), $keyboardadmin, 'HTML');
+        step("home", $from_id);
+        return;
+    }
     sendmessage($from_id, $textbotlang['Admin']['managepanel']['addedpanel'], $keyboardadmin, 'HTML');
     sendmessage($from_id, "🥳", $keyboardadmin, 'HTML');
     step("home", $from_id);
@@ -993,6 +1044,11 @@ $paycount
     } elseif ($userdata['type'] == "s_ui") {
         sendmessage($from_id, "❌ نکته :
 1 - از مسیر مدیریت پنل > تنظیم ⚙️ تنظیم پروتکل و اینباند یک نام کاربری کانفیگ را ارسال نمایید.", null, 'HTML');
+    } elseif (in_array($userdata['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        sendmessage($from_id, "❌ نکته :
+پنل SSH با موفقیت اضافه شد.
+اطلاعات اتصال (آدرس/پورت/نام کاربری/رمز) را به درستی وارد کنید.
+رمز عبور کاربران به عنوان لینک اشتراک ذخیره می‌شود.", null, 'HTML');
     }
 }
 //_____________________[ message ]____________________________//
@@ -3299,6 +3355,47 @@ $caption";
         return;
     }
     savedata("save", "data_limit_reset", "no_reset");
+    // SSH panels: ask for connection limit
+    if (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        sendmessage($from_id, "👥 تعداد کاربر همزمان (چند کاربره) را وارد کنید:\n\nمثال: 1 برای تک کاربره، 2 برای دو کاربره و ...", $backadmin, 'HTML');
+        step('get_connection_limit', $from_id);
+        return;
+    }
+    sendmessage($from_id, " 🗒 یادداشت را برای محصول ارسال کنید. این یادداشت در پیش فاکتور کاربر نشان داده می شود.", $backadmin, 'HTML');
+    step('endstep', $from_id);
+} elseif ($user['step'] == "get_connection_limit") {
+    if (!ctype_digit($text) || intval($text) < 1) {
+        sendmessage($from_id, "❌ تعداد کاربر باید عدد مثبت باشد", $backadmin, 'HTML');
+        return;
+    }
+    savedata("save", "inbounds", $text);
+    $userdata = json_decode($user['Processing_value'], true);
+    $panel = select("marzban_panel", "*", "name_panel", $userdata['Location'], "select");
+    // Dragon only supports days (first-connect), skip expiry mode selection
+    if ($panel['type'] == 'dragon') {
+        savedata("save", "data_limit_reset", "first_connect");
+        sendmessage($from_id, " 🗒 یادداشت را برای محصول ارسال کنید. این یادداشت در پیش فاکتور کاربر نشان داده می شود.", $backadmin, 'HTML');
+        step('endstep', $from_id);
+        return;
+    }
+    $keyboard_expiry_mode = json_encode([
+        'keyboard' => [
+            [['text' => '📅 بر حسب تاریخ خرید'], ['text' => '🔗 بعد از اولین اتصال']],
+            [['text' => $textbotlang['Admin']['backadmin']]]
+        ],
+        'resize_keyboard' => true
+    ]);
+    sendmessage($from_id, "⏱ نوع محاسبه تاریخ انقضا را انتخاب کنید:\n\n📅 <b>بر حسب تاریخ خرید</b>: تاریخ انقضا از لحظه خرید محاسبه می‌شود\n🔗 <b>بعد از اولین اتصال</b>: تاریخ انقضا بعد از اولین اتصال کاربر شروع می‌شود", $keyboard_expiry_mode, 'HTML');
+    step('get_expiry_mode', $from_id);
+} elseif ($user['step'] == "get_expiry_mode") {
+    if ($text == '📅 بر حسب تاریخ خرید') {
+        savedata("save", "data_limit_reset", "date_based");
+    } elseif ($text == '🔗 بعد از اولین اتصال') {
+        savedata("save", "data_limit_reset", "first_connect");
+    } else {
+        sendmessage($from_id, "❌ لطفا یکی از گزینه‌ها را انتخاب کنید", null, 'HTML');
+        return;
+    }
     sendmessage($from_id, " 🗒 یادداشت را برای محصول ارسال کنید. این یادداشت در پیش فاکتور کاربر نشان داده می شود.", $backadmin, 'HTML');
     step('endstep', $from_id);
 } elseif ($user['step'] == "getnote") {
@@ -3311,7 +3408,8 @@ $caption";
     $varhide_panel = "{}";
     if (!isset($userdata['category']))
         $userdata['category'] = null;
-    $stmt = $pdo->prepare("INSERT IGNORE INTO product (name_product,code_product,price_product,Volume_constraint,Service_time,Location,agent,data_limit_reset,note,category,hide_panel,one_buy_status) VALUES (:name_product,:code_product,:price_product,:Volume_constraint,:Service_time,:Location,:agent,:data_limit_reset,:note,:category,:hide_panel,'0')");
+    $inbounds_val = $userdata['inbounds'] ?? null;
+    $stmt = $pdo->prepare("INSERT IGNORE INTO product (name_product,code_product,price_product,Volume_constraint,Service_time,Location,agent,data_limit_reset,note,category,hide_panel,one_buy_status,inbounds) VALUES (:name_product,:code_product,:price_product,:Volume_constraint,:Service_time,:Location,:agent,:data_limit_reset,:note,:category,:hide_panel,'0',:inbounds)");
     $stmt->bindParam(':name_product', $userdata['name_product']);
     $stmt->bindParam(':code_product', $randomString);
     $stmt->bindParam(':price_product', $userdata['price_product']);
@@ -3323,6 +3421,7 @@ $caption";
     $stmt->bindParam(':category', $userdata['category'], PDO::PARAM_STR);
     $stmt->bindParam(':note', $text, PDO::PARAM_STR);
     $stmt->bindParam(':hide_panel', $varhide_panel, PDO::PARAM_STR);
+    $stmt->bindParam(':inbounds', $inbounds_val, PDO::PARAM_STR);
     $stmt->execute();
     sendmessage($from_id, $textbotlang['Admin']['Product']['SaveProduct'], $shopkeyboard, 'HTML');
     step('home', $from_id);
@@ -3555,6 +3654,9 @@ $caption";
     $panel = select("marzban_panel", "*", "code_panel", $user['Processing_value_one'], "select");
     $info_product = mysqli_fetch_assoc(mysqli_query($connect, "SELECT * FROM product WHERE id = '$id_product'  AND agent = '{$user['Processing_value_tow']}' AND (Location = '{$panel['name_panel']}' OR Location = '/all') LIMIT 1"));
     $count_invoice = select("invoice", "*", "name_product", $info_product['name_product'], "count");
+    $connection_limit_display = isset($info_product['inbounds']) ? $info_product['inbounds'] : '1';
+    $expiry_mode_map = ['first_connect' => 'بعد از اولین اتصال', 'date_based' => 'بر حسب تاریخ خرید'];
+    $expiry_mode_display = isset($expiry_mode_map[$info_product['data_limit_reset']]) ? $expiry_mode_map[$info_product['data_limit_reset']] : $info_product['data_limit_reset'];
     $infoproduct = "
 📌 اطلاعات محصول در حال ویرایش:
 نام محصول :  {$info_product['name_product']}
@@ -3563,6 +3665,8 @@ $caption";
 موقعیت محصول : {$info_product['Location']}
 زمان محصول : {$info_product['Service_time']}
 نوع کاربری محصول : {$info_product['agent']}
+تعداد کاربر (چند کاربره) : {$connection_limit_display}
+نوع انقضا : {$expiry_mode_display}
 ریست دوره ای حجم محصول : {$info_product['data_limit_reset']}
 یادداشت محصول : {$info_product['note']}
 دسته بندی محصول : {$info_product['category']}
@@ -3656,6 +3760,59 @@ $caption";
     $stmt->bindParam(':agent', $user['Processing_value_tow']);
     $stmt->execute();
     sendmessage($from_id, "✅نام محصول بروزرسانی شد", $shopkeyboard, 'HTML');
+    step('home', $from_id);
+} elseif ($text == "👥 تعداد کاربر" && $adminrulecheck['rule'] == "administrator") {
+    $info_product = mysqli_fetch_assoc(mysqli_query($connect, "SELECT * FROM product WHERE id = '{$user['Processing_value']}'"));
+    $current = $info_product['inbounds'] ?? '1';
+    sendmessage($from_id, "👥 تعداد کاربر همزمان فعلی: <b>{$current}</b>\n\nتعداد کاربر جدید را ارسال کنید:", $backadmin, 'HTML');
+    step('change_connection_limit', $from_id);
+} elseif ($user['step'] == "change_connection_limit") {
+    if (!ctype_digit($text) || intval($text) < 1) {
+        sendmessage($from_id, "❌ تعداد کاربر باید عدد مثبت باشد", $backadmin, 'HTML');
+        return;
+    }
+    $panel = select("marzban_panel", "*", "code_panel", $user['Processing_value_one'], "select");
+    $stmt = $pdo->prepare("UPDATE product SET inbounds = :inbounds WHERE id = :name_product AND (Location = :Location OR Location = '/all') AND agent = :agent");
+    $stmt->bindParam(':inbounds', $text);
+    $stmt->bindParam(':name_product', $user['Processing_value']);
+    $stmt->bindParam(':Location', $panel['name_panel']);
+    $stmt->bindParam(':agent', $user['Processing_value_tow']);
+    $stmt->execute();
+    sendmessage($from_id, "✅ تعداد کاربر محصول بروزرسانی شد به: <b>{$text}</b> کاربر", $shopkeyboard, 'HTML');
+    step('home', $from_id);
+} elseif ($text == "⏱ نوع انقضا" && $adminrulecheck['rule'] == "administrator") {
+    $info_product = mysqli_fetch_assoc(mysqli_query($connect, "SELECT * FROM product WHERE id = '{$user['Processing_value']}'"));
+    $current_mode = isset($info_product['data_limit_reset']) ? $info_product['data_limit_reset'] : 'no_reset';
+    $expiry_labels = ['first_connect' => '🔗 بعد از اولین اتصال', 'date_based' => '📅 بر حسب تاریخ خرید'];
+    $mode_label = isset($expiry_labels[$current_mode]) ? $expiry_labels[$current_mode] : $current_mode;
+    $keyboard_expiry_edit = json_encode([
+        'keyboard' => [
+            [['text' => '📅 بر حسب تاریخ خرید'], ['text' => '🔗 بعد از اولین اتصال']],
+            [['text' => $textbotlang['Admin']['backadmin']]]
+        ],
+        'resize_keyboard' => true
+    ]);
+    sendmessage($from_id, "⏱ نوع انقضای فعلی: <b>{$mode_label}</b>\n\nنوع جدید را انتخاب کنید:\n\n📅 <b>بر حسب تاریخ خرید</b>: تاریخ انقضا از لحظه خرید محاسبه می‌شود\n🔗 <b>بعد از اولین اتصال</b>: تاریخ انقضا بعد از اولین اتصال کاربر شروع می‌شود", $keyboard_expiry_edit, 'HTML');
+    step('change_expiry_mode', $from_id);
+} elseif ($user['step'] == "change_expiry_mode") {
+    $new_mode = null;
+    if ($text == '📅 بر حسب تاریخ خرید') {
+        $new_mode = 'date_based';
+    } elseif ($text == '🔗 بعد از اولین اتصال') {
+        $new_mode = 'first_connect';
+    } else {
+        sendmessage($from_id, "❌ لطفا یکی از گزینه‌ها را انتخاب کنید", null, 'HTML');
+        return;
+    }
+    $panel = select("marzban_panel", "*", "code_panel", $user['Processing_value_one'], "select");
+    $stmt = $pdo->prepare("UPDATE product SET data_limit_reset = :data_limit_reset WHERE id = :name_product AND (Location = :Location OR Location = '/all') AND agent = :agent");
+    $stmt->bindParam(':data_limit_reset', $new_mode);
+    $stmt->bindParam(':name_product', $user['Processing_value']);
+    $stmt->bindParam(':Location', $panel['name_panel']);
+    $stmt->bindParam(':agent', $user['Processing_value_tow']);
+    $stmt->execute();
+    $mode_label = ($new_mode == 'date_based') ? '📅 بر حسب تاریخ خرید' : '🔗 بعد از اولین اتصال';
+    sendmessage($from_id, "✅ نوع انقضا بروزرسانی شد به: <b>{$mode_label}</b>", $shopkeyboard, 'HTML');
     step('home', $from_id);
 } elseif ($text == "نوع ریست حجم" && $adminrulecheck['rule'] == "administrator") {
     sendmessage($from_id, "نوع ریست حجم را ارسال کنید", $keyboardtimereset, 'HTML');
@@ -4443,6 +4600,46 @@ $text_expie_agent
 </blockquote>
 ", $option_mikrotik, 'HTML');
         }
+    } elseif (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_type_names = ['shahan' => 'شاهان', 'xpanel' => 'XPanel', 'rocket_ssh' => 'Rocket', 'dragon' => 'Dragon'];
+        $ssh_type_name = $ssh_type_names[$marzban_list_get['type']] ?? $marzban_list_get['type'];
+        $ListSell = number_format(mysqli_fetch_assoc(mysqli_query($connect, "SELECT COUNT(*) FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = '{$marzban_list_get['name_panel']}' AND name_product != 'سرویس تست'"))['COUNT(*)'] ?? 0);
+        $ListSellSUM = number_format(mysqli_fetch_assoc(mysqli_query($connect, "SELECT SUM(price_product) FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR Status = 'send_on_hold') AND Service_location = '{$marzban_list_get['name_panel']}' AND name_product != 'سرویس تست'"))['SUM(price_product)'] ?? 0);
+
+        // Get panel-specific stats for Rocket SSH
+        $panel_stats_text = "";
+        if ($marzban_list_get['type'] == 'rocket_ssh') {
+            $rocket_stats = get_panel_stats_rocket($marzban_list_get['name_panel']);
+            if ($rocket_stats['connected']) {
+                $traffic_used_gb = round($rocket_stats['total_traffic_used'], 2);
+                $panel_stats_text = "
+🖥 وضعیت اتصال پنل: ✅ متصل است
+👥 تعداد کل کاربران پنل: {$rocket_stats['total_users']}
+👤 تعداد کاربران فعال: {$rocket_stats['active_users']}
+🚫 غیرفعال: {$rocket_stats['disabled_users']} | منقضی: {$rocket_stats['expired_users']}
+🌐 ترافیک مصرفی کل: {$traffic_used_gb} GB
+";
+            } else {
+                $error_msg = $rocket_stats['error'] ?? 'Unknown error';
+                $panel_stats_text = "
+🖥 وضعیت اتصال پنل: ❌ خطا در اتصال
+⚠️ علت: $error_msg
+";
+            }
+        }
+
+        $text_ssh = "
+آمار پنل SSH شما👇:
+
+🖥 نوع پنل : $ssh_type_name
+🔗 آدرس : {$marzban_list_get['url_panel']}
+$panel_stats_text
+🛍 تعداد فروش کل در این پنل : $ListSell
+🛍 جمع فروش کل در این پنل : $ListSellSUM تومان
+گروه کاربری :{$marzban_list_get['agent']}
+
+⭕️ برای مدیریت پنل یکی از گزینه های زیر را انتخاب کنید";
+        sendmessage($from_id, $text_ssh, $optionssh, 'HTML');
     } else {
         sendmessage($from_id, "یک گزینه را انتخاب نمایید", $optionMarzban, 'HTML');
     }
@@ -7081,6 +7278,37 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "Manualsale" ? $datatextbot['textmanual'] : $datatextbot['textafterpay'];
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "WGDashboard" ? $datatextbot['text_wgdashboard'] : $datatextbot['textafterpay'];
     $datatextbot['textafterpay'] = $marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "mikrotik" ? $datatextbot['textafterpayibsng'] : $datatextbot['textafterpay'];
+    if (in_array($marzban_list_get['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+        $ssh_ports = parse_ssh_ports($marzban_list_get);
+        $ssh_host = get_ssh_display_host($marzban_list_get);
+        $ssh_days_display = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Service_time'];
+        $ssh_volume = (intval($info_product['Volume_constraint']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : $info_product['Volume_constraint'] . ' GB';
+        $ssh_expire_date = (intval($info_product['Service_time']) == 0) ? $textbotlang['users']['stateus']['Unlimited'] : date('Y/m/d', time() + (intval($info_product['Service_time']) * 86400));
+        $ssh_connection_limit = 1;
+        if (isset($info_product['inbounds']) && is_numeric($info_product['inbounds'])) {
+            $ssh_connection_limit = intval($info_product['inbounds']);
+        }
+        $npvt_link = generate_npvt_link($DataUserOut['username'], $DataUserOut['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+        $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$DataUserOut['username']}</code>
+🔑 Password : <code>{$DataUserOut['subscription_url']}</code>
+
+📶 Connection Limit : {$ssh_connection_limit}
+⏳ Days : {$ssh_days_display}
+📅 Expiry : {$ssh_expire_date}
+🗜 Traffic : {$ssh_volume}
+
+🌿 نام سرویس : {$info_product['name_product']}
+🇺🇳 لوکیشن : {$marzban_list_get['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+        update("invoice", "user_info", $DataUserOut['subscription_url'], "id_invoice", $randomString);
+    } else {
     if (intval($info_product['Service_time']) == 0)
         $info_product['Service_time'] = $textbotlang['users']['stateus']['Unlimited'];
     if (intval($info_product['Volume_constraint']) == 0)
@@ -7099,6 +7327,7 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
     if ($marzban_list_get['type'] == "Manualsale" || $marzban_list_get['type'] == "ibsng" || $marzban_list_get['type'] == "mikrotik") {
         $textcreatuser = str_replace('{password}', $DataUserOut['subscription_url'], $textcreatuser);
         update("invoice", "user_info", $DataUserOut['subscription_url'], "id_invoice", $randomString);
+    }
     }
     sendMessageService($marzban_list_get, $DataUserOut['configs'], $output_config_link, $DataUserOut['username'], $Shoppinginfo, $textcreatuser, $randomString, $user['Processing_value']);
     sendmessage($from_id, $textbotlang['Admin']['addorder']['fivestep'], $keyboardadmin, 'HTML');
@@ -7584,6 +7813,28 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
         $datatextbot['textafterpay'] = $panel['type'] == "Manualsale" ? $datatextbot['textmanual'] : $datatextbot['textafterpay'];
         $datatextbot['textafterpay'] = $panel['type'] == "WGDashboard" ? $datatextbot['text_wgdashboard'] : $datatextbot['textafterpay'];
         $datatextbot['textafterpay'] = $panel['type'] == "ibsng" || $panel['type'] == "mikrotik" ? $datatextbot['textafterpayibsng'] : $datatextbot['textafterpay'];
+        if (in_array($panel['type'], ['shahan', 'xpanel', 'rocket_ssh', 'dragon'])) {
+            $ssh_ports = parse_ssh_ports($panel);
+            $ssh_host = get_ssh_display_host($panel);
+            $npvt_link = generate_npvt_link($dataoutput['username'], $dataoutput['subscription_url'], $ssh_host, $ssh_ports['ssh_port'], $ssh_ports['udgpw'] ?: 7300);
+            $textcreatuser = "✅ سرویس با موفقیت ایجاد شد
+
+🌐 SSH Host : <code>{$ssh_host}</code>
+🔌 Port : {$ssh_ports['ssh_port']}
+🔌 Udgpw : " . ($ssh_ports['udgpw'] ?: '0') . "
+👤 Username : <code>{$dataoutput['username']}</code>
+🔑 Password : <code>{$dataoutput['subscription_url']}</code>
+
+⏳ Days : {$text}
+🗜 Traffic : {$user['Processing_value_tow']} GB
+
+🌿 نام سرویس : پلن دلخواه
+🇺🇳 لوکیشن : {$panel['name_panel']}
+
+🔐 لینک NPVT :
+<code>{$npvt_link}</code>";
+            update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+        } else {
         if (intval($text) == 0)
             $text = $textbotlang['users']['stateus']['Unlimited'];
         $textcreatuser = str_replace('{username}', "<code>{$dataoutput['username']}</code>", $datatextbot['textafterpay']);
@@ -7597,6 +7848,7 @@ if ($datain == "settimecornremove" && $adminrulecheck['rule'] == "administrator"
         if ($panel['type'] == "Manualsale" || $panel['type'] == "ibsng" || $panel['type'] == "mikrotik") {
             $textcreatuser = str_replace('{password}', $dataoutput['subscription_url'], $textcreatuser);
             update("invoice", "user_info", $dataoutput['subscription_url'], "id_invoice", $randomString);
+        }
         }
         sendMessageService($panel, $dataoutput['configs'], $output_config_link, $dataoutput['username'], null, $textcreatuser, $randomString);
     }
@@ -11470,18 +11722,21 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
             ]
         ]
     ]);
+    // بررسی وضعیت فعلی قبل از تغییر
+    $DataUserBefore = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
+    $wasActive = ($DataUserBefore['status'] == "active");
     $dataoutput = $ManagePanel->Change_status($nameloc['username'], $nameloc['Service_location']);
     if ($dataoutput['status'] == "Unsuccessful") {
         Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['notchanged'], $bakinfos);
         return;
     }
-    $DataUserOut = $ManagePanel->DataUser($nameloc['Service_location'], $nameloc['username']);
-    if ($DataUserOut['status'] == "active") {
-        update("invoice", "Status", "active", "id_invoice", $nameloc['id_invoice']);
-        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['activedconfig'], $bakinfos);
-    } else {
+    // اگه قبلاً active بود، حالا disabled شده و برعکس
+    if ($wasActive) {
         update("invoice", "Status", "disablebyadmin", "id_invoice", $nameloc['id_invoice']);
         Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['disabledconfig'], $bakinfos);
+    } else {
+        update("invoice", "Status", "active", "id_invoice", $nameloc['id_invoice']);
+        Editmessagetext($from_id, $message_id, $textbotlang['users']['stateus']['activedconfig'], $bakinfos);
     }
 } elseif (preg_match('/removefull-(.*)/', $datain, $dataget)) {
     $id_invoice = $dataget[1];

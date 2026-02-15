@@ -33,43 +33,6 @@ if ($text == "📞 تنظیم نام کاربری پشتیبانی") {
     step("home", $from_id);
     $setting['support_username'] = $text;
     update("botsaz", "setting", json_encode($setting), "bot_token", $ApiToken);
-} elseif ($text == "🔋 قیمت حجم") {
-    sendmessage($from_id, "📌 قیمت هر گیگ حجم را ارسال نمایید. 
-قیمت پایه حجم. : {$setting['minpricevolume']} تومان
-قیمت فعلی حجم. : {$setting['pricevolume']} تومان", $backadmin, 'HTML');
-    step("getpricvolumeadmin", $from_id);
-} elseif ($user['step'] == "getpricvolumeadmin") {
-    if (!ctype_digit($text)) {
-        sendmessage($from_id, $textbotlang['Admin']['agent']['invalidvlue'], $backadmin, 'HTML');
-        return;
-    }
-    if (intval($text) < intval($setting['minpricevolume'])) {
-        sendmessage($from_id, "❌ قیمت حجم باید بزرگ تر از قیمت پایه حجم باشد.", $backadmin, 'HTML');
-        return;
-    }
-    sendmessage($from_id, "✅ قیمت حجم با موفقیت تنظیم گردید.", $keyboardprice, 'HTML');
-    step("home", $from_id);
-    $setting['pricevolume'] = $text;
-    update("botsaz", "setting", json_encode($setting), "bot_token", $ApiToken);
-} elseif ($text == "⌛️ قیمت زمان") {
-    sendmessage($from_id, "
-📌 قیمت هر روز زمان را ارسال نمایید.
- قیمت پایه زمان. : {$setting['minpricetime']} تومان
-قیمت فعلی شما : {$setting['pricetime']} تومان", $backadmin, 'HTML');
-    step("getpricvtimeadmin", $from_id);
-} elseif ($user['step'] == "getpricvtimeadmin") {
-    if (!ctype_digit($text)) {
-        sendmessage($from_id, $textbotlang['Admin']['agent']['invalidvlue'], $backadmin, 'HTML');
-        return;
-    }
-    if (intval($text) < intval($setting['minpricetime'])) {
-        sendmessage($from_id, "❌ قیمت زمان باید بزرگ تر از قیمت پایه زمان باشد.", $backadmin, 'HTML');
-        return;
-    }
-    sendmessage($from_id, "✅ قیمت زمان با موفقیت تنظیم گردید.", $keyboardprice, 'HTML');
-    step("home", $from_id);
-    $setting['pricetime'] = $text;
-    update("botsaz", "setting", json_encode($setting), "bot_token", $ApiToken);
 } elseif (preg_match('/Confirm_pay_(\w+)/', $datain, $dataget)) {
     $order_id = $dataget[1];
     $Confirm_pay = json_encode([
@@ -498,10 +461,6 @@ if ($text == "📞 تنظیم نام کاربری پشتیبانی") {
                 ['text' => $textbotlang['Admin']['Status']['subject'], 'callback_data' => "subject"],
             ],
             [
-                ['text' => $status_custom, 'callback_data' => "editstsuts-statusvolume-{$setting['show_product']}"],
-                ['text' => "🛍 فروش  حجم دلخواه", 'callback_data' => "statuscustomvolume"],
-            ],
-            [
                 ['text' => $status_note, 'callback_data' => "editstsuts-statusnote-{$setting['active_step_note']}"],
                 ['text' => "✏️ یادداشت ", 'callback_data' => "statusnote"],
             ]
@@ -543,10 +502,6 @@ if ($text == "📞 تنظیم نام کاربری پشتیبانی") {
             [
                 ['text' => $textbotlang['Admin']['Status']['statussubject'], 'callback_data' => "subjectde"],
                 ['text' => $textbotlang['Admin']['Status']['subject'], 'callback_data' => "subject"],
-            ],
-            [
-                ['text' => $status_custom, 'callback_data' => "editstsuts-statusvolume-{$setting['show_product']}"],
-                ['text' => "🛍 فروش  حجم دلخواه", 'callback_data' => "statuscustomvolume"],
             ],
             [
                 ['text' => $status_note, 'callback_data' => "editstsuts-statusnote-{$setting['active_step_note']}"],
